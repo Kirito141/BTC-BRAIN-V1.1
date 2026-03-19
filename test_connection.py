@@ -139,25 +139,31 @@ def test_delta_exchange():
     try:
         end_ts = int(time.time())
         start_ts = end_ts - (50 * 300)  # 50 x 5-min candles
-        r = requests.get(f"{base}/v2/history/candles", params={
-            "symbol": "BTCUSD",
-            "resolution": "5",
-            "start": start_ts,
-            "end": end_ts,
-        }, timeout=10)
-        data = r.json()
-        if data.get("success") and data.get("result"):
-            candles = data["result"]
-            print(f"  {check_mark(True)} Candles endpoint OK (5m) — {len(candles)} candles returned")
-            # Verify structure
-            sample = candles[0]
-            has_fields = all(k in sample for k in ["time", "open", "high", "low", "close"])
-            print(f"  {check_mark(has_fields)} Candle data format {'correct' if has_fields else 'UNEXPECTED'}")
-            if not has_fields:
-                print(f"      Keys found: {list(sample.keys())}")
-                all_ok = False
-        else:
-            print(f"  {check_mark(False)} Candles returned no data")
+
+        # Try "5m" format first, then "5" as fallback
+        candles = None
+        for res_format in ["5m", "5"]:
+            r = requests.get(f"{base}/v2/history/candles", params={
+                "symbol": "BTCUSD",
+                "resolution": res_format,
+                "start": start_ts,
+                "end": end_ts,
+            }, timeout=10)
+            data = r.json()
+            if data.get("success") and data.get("result"):
+                candles = data["result"]
+                print(f"  {check_mark(True)} Candles endpoint OK (5m, format='{res_format}') — {len(candles)} candles returned")
+                # Verify structure
+                sample = candles[0]
+                has_fields = all(k in sample for k in ["time", "open", "high", "low", "close"])
+                print(f"  {check_mark(has_fields)} Candle data format {'correct' if has_fields else 'UNEXPECTED'}")
+                if not has_fields:
+                    print(f"      Keys found: {list(sample.keys())}")
+                    all_ok = False
+                break
+
+        if candles is None:
+            print(f"  {check_mark(False)} Candles returned no data (tried '5m' and '5')")
             all_ok = False
     except Exception as e:
         print(f"  {check_mark(False)} Candles endpoint FAILED: {e}")
@@ -167,17 +173,23 @@ def test_delta_exchange():
     try:
         end_ts = int(time.time())
         start_ts = end_ts - (50 * 180)
-        r = requests.get(f"{base}/v2/history/candles", params={
-            "symbol": "BTCUSD",
-            "resolution": "3",
-            "start": start_ts,
-            "end": end_ts,
-        }, timeout=10)
-        data = r.json()
-        if data.get("success") and data.get("result"):
-            print(f"  {check_mark(True)} Candles endpoint OK (3m) — {len(data['result'])} candles returned")
-        else:
-            print(f"  {check_mark(False)} 3m candles returned no data")
+
+        candles_3m = None
+        for res_format in ["3m", "3"]:
+            r = requests.get(f"{base}/v2/history/candles", params={
+                "symbol": "BTCUSD",
+                "resolution": res_format,
+                "start": start_ts,
+                "end": end_ts,
+            }, timeout=10)
+            data = r.json()
+            if data.get("success") and data.get("result"):
+                print(f"  {check_mark(True)} Candles endpoint OK (3m, format='{res_format}') — {len(data['result'])} candles returned")
+                candles_3m = data["result"]
+                break
+
+        if candles_3m is None:
+            print(f"  {check_mark(False)} 3m candles returned no data (tried '3m' and '3')")
             all_ok = False
     except Exception as e:
         print(f"  {check_mark(False)} 3m Candles FAILED: {e}")

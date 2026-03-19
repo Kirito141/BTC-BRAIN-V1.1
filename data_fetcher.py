@@ -74,22 +74,30 @@ def fetch_delta_candles(resolution="5m", count=50):
     start_ts = end_ts - (count * interval_secs) - interval_secs  # extra buffer
 
     url = f"{config.DELTA_BASE_URL}/v2/history/candles"
+
+    # Delta India resolution format: pass the resolution string as-is
+    # e.g. "1m", "3m", "5m", "15m", "30m", "1h", "2h", "1d", "1w"
+    # Some Delta endpoints also accept just the number ("5" for 5m)
+    # We try the full string first since that matches their docs
     params = {
         "symbol": config.DELTA_SYMBOL,
-        "resolution": resolution.replace("m", "").replace("h", ""),  # Delta uses "5" not "5m"
+        "resolution": resolution,
         "start": start_ts,
         "end": end_ts,
     }
 
-    # Delta's resolution format: "1", "3", "5", "15", "30", "60" for minutes
-    # and "1D", "1W" for daily/weekly
-    if "h" in resolution:
-        hours = int(resolution.replace("h", ""))
-        params["resolution"] = str(hours * 60)
-    else:
-        params["resolution"] = resolution.replace("m", "")
-
     data = _safe_request(url, params=params, source_name="Delta Candles")
+
+    # If full string format fails, retry with numeric-only format
+    # (e.g. "5" instead of "5m") as some Delta API versions expect this
+    if data is None or not data.get("success") or not data.get("result"):
+        if "h" in resolution:
+            hours = int(resolution.replace("h", ""))
+            params["resolution"] = str(hours * 60)
+        else:
+            params["resolution"] = resolution.replace("m", "")
+        data = _safe_request(url, params=params, source_name="Delta Candles (retry)")
+
     if data is None or not data.get("success"):
         return None
 
