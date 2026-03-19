@@ -319,10 +319,19 @@ def generate_signal(all_data):
     candles_5m = all_data.get("delta_candles_5m")
     regime = indicators.detect_regime(candles_5m)
 
-    # ── Step 4: High volatility → sit out ───────────────────────────────────
+    # ── Step 4: High volatility or unknown regime → sit out ──────────────────
     if regime["regime"] == "high_volatility":
         return {
             "status": "SIT_OUT",
+            "regime": regime,
+            "price": entry_price,
+            "time": time_str,
+            "reason": regime["reason"],
+        }
+
+    if regime["regime"] == "unknown":
+        return {
+            "status": "NO_DATA",
             "regime": regime,
             "price": entry_price,
             "time": time_str,

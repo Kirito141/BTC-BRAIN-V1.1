@@ -18,7 +18,6 @@
 import time
 import requests
 import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
 import config
 
@@ -195,15 +194,21 @@ def fetch_binance_klines(interval="5m", limit=50):
     }
     data = _safe_request(url, params=params, source_name="Binance Klines")
 
-    if data is None or not isinstance(data, list):
+    if data is None or not isinstance(data, list) or len(data) == 0:
         return None
 
     # Binance klines: [open_time, O, H, L, C, volume, close_time, ...]
-    df = pd.DataFrame(data, columns=[
-        "time", "open", "high", "low", "close", "volume",
-        "close_time", "quote_vol", "trades", "taker_buy_base",
-        "taker_buy_quote", "ignore"
-    ])
+    # Verify each row has at least 6 columns before parsing
+    expected_cols = ["time", "open", "high", "low", "close", "volume",
+                     "close_time", "quote_vol", "trades", "taker_buy_base",
+                     "taker_buy_quote", "ignore"]
+    
+    # Filter out malformed rows
+    valid_rows = [row for row in data if isinstance(row, list) and len(row) >= 6]
+    if not valid_rows:
+        return None
+
+    df = pd.DataFrame(valid_rows, columns=expected_cols[:len(valid_rows[0])])
 
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -227,7 +232,11 @@ def fetch_fear_greed_index():
     if data is None or "data" not in data:
         return None
 
-    entry = data["data"][0]
+    entries = data["data"]
+    if not entries or len(entries) == 0:
+        return None
+
+    entry = entries[0]
     return {
         "value": int(entry.get("value", 50)),
         "classification": entry.get("value_classification", "Neutral"),

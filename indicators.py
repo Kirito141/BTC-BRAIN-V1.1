@@ -64,6 +64,10 @@ def detect_ema_crossover(df):
     prev_fast = ema_fast.iloc[-2]
     prev_slow = ema_slow.iloc[-2]
 
+    # Guard against NaN (can happen with very short or gapped data)
+    if any(np.isnan(v) for v in [curr_fast, curr_slow, prev_fast, prev_slow]):
+        return {"signal": None, "ema_fast": 0, "ema_slow": 0, "spread_pct": 0, "strength": 0}
+
     # EMA spread as % of price
     price = close.iloc[-1]
     spread_pct = abs(curr_fast - curr_slow) / price * 100 if price > 0 else 0
@@ -115,8 +119,10 @@ def calculate_rsi(series, period=14):
     avg_gain = gain.ewm(alpha=1 / period, min_periods=period).mean()
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period).mean()
 
-    rs = avg_gain / avg_loss
+    # Avoid division by zero — when avg_loss is 0, RSI is 100 (all gains)
+    rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.fillna(100)  # all gains, no losses → RSI = 100
 
     return rsi
 
