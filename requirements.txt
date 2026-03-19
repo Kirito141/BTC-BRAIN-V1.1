@@ -1,0 +1,24 @@
+# =============================================================================
+#  BTC Perpetuals Scalping Signal Bot — Dependencies
+# =============================================================================
+#  Install: pip install -r requirements.txt
+# =============================================================================
+
+# HTTP requests to APIs
+requests>=2.31.0
+
+# Data manipulation & technical indicators
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Environment variable management (.env file)
+python-dotenv>=1.0.0
+
+# Beautiful terminal dashboard
+rich>=13.0.0
+
+# Desktop notifications (cross-platform)
+plyer>=2.1.0
+
+# Task scheduling (for future use — currently using time.sleep loop)
+schedule>=1.2.0
