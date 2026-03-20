@@ -16,8 +16,9 @@ venv/
 .venv/
 env/
 
-# Signal logs (generated at runtime)
+# Signal & trade logs (generated at runtime)
 signals_log.csv
+trades_log.csv
 bot.log
 
 # IDE
@@ -30,3 +31,6 @@ bot.log
 # OS
 .DS_Store
 Thumbs.db
+active_position.json
+pnl_log.csv
+daily_pnl.json

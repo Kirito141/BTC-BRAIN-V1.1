@@ -46,6 +46,53 @@ def send_desktop_notification(title, message):
 
 
 # =============================================================================
+#  SOUND ALERT — macOS / Linux / Windows
+# =============================================================================
+
+def play_signal_sound(direction="BUY"):
+    """
+    Play an alert sound when a signal fires.
+    Uses macOS 'afplay' with system sounds, falls back to terminal bell.
+    """
+    if not config.SOUND_ALERTS_ENABLED:
+        return
+
+    try:
+        import subprocess
+        import platform
+
+        system = platform.system()
+
+        if system == "Darwin":  # macOS
+            # Use different sounds for BUY vs SELL
+            if direction == "BUY":
+                sound = "/System/Library/Sounds/Glass.aiff"
+            else:
+                sound = "/System/Library/Sounds/Sosumi.aiff"
+            # Play 3 times for urgency
+            for _ in range(3):
+                subprocess.Popen(
+                    ["afplay", sound],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        elif system == "Linux":
+            # Try paplay (PulseAudio), then aplay, then bell
+            try:
+                subprocess.Popen(["paplay", "/usr/share/sounds/freedesktop/stereo/complete.oga"],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except FileNotFoundError:
+                print("\a")  # terminal bell
+        else:
+            # Windows or other — terminal bell
+            print("\a")
+
+    except Exception:
+        # Sound is never critical — fail silently
+        print("\a")  # fallback to terminal bell
+
+
+# =============================================================================
 #  TELEGRAM — Fully Wired (just add token + chat_id to .env)
 # =============================================================================
 

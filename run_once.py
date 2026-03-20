@@ -3,15 +3,11 @@
  RUN_ONCE.PY — Single Cycle Runner (for testing/debugging)
 =============================================================================
  Runs exactly ONE cycle of the bot and exits.
- Perfect for:
-   • Testing after changes without waiting for the 3-min loop
-   • Debugging data fetching or signal logic
-   • Running a quick check before starting the full bot
-   
- Usage: python run_once.py
  
- Add --verbose flag for extra debug output:
-        python run_once.py --verbose
+ Usage:
+   python3 run_once.py              # run one cycle with Claude analysis
+   python3 run_once.py --verbose    # show raw indicator values + Claude prompt
+   python3 run_once.py --data-only  # just fetch data + indicators, skip Claude
 =============================================================================
 """
 
@@ -20,17 +16,17 @@ import json
 import argparse
 from datetime import datetime, timezone, timedelta
 
-# Local modules
 import config
 import data_fetcher
 import indicators
-import signal_engine
+import claude_brain
+import trade_tracker
 import alerts
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
-def run_single_cycle(verbose=False):
+def run_single_cycle(verbose=False, data_only=False):
     """Run one complete bot cycle with detailed output."""
 
     now = datetime.now(IST).strftime("%I:%M:%S %p IST")
@@ -44,7 +40,6 @@ def run_single_cycle(verbose=False):
 
     all_data = data_fetcher.fetch_all_data()
 
-    # Report data availability
     print(f"\n  Data Source Status:")
     for key, val in all_data.items():
         if val is None:
@@ -56,9 +51,17 @@ def run_single_cycle(verbose=False):
         else:
             print(f"    ✅ {key}: {val}")
 
-    # ── Step 2: Show raw indicator values (verbose) ─────────────────────────
+    # ── Step 2: Compute indicators ──────────────────────────────────────────
+    print(f"\n📐 COMPUTING INDICATORS...")
+    print("─" * 50)
+
+    computed = claude_brain.compute_all_indicators(all_data)
+    for key, val in computed.items():
+        print(f"    {key:.<25} {val}")
+
+    # ── Step 3: Show raw data (verbose) ─────────────────────────────────────
     if verbose:
-        print(f"\n📐 RAW INDICATOR VALUES:")
+        print(f"\n📋 VERBOSE — RAW INDICATOR VALUES:")
         print("─" * 50)
 
         candles_5m = all_data.get("delta_candles_5m")
@@ -66,112 +69,103 @@ def run_single_cycle(verbose=False):
 
         if candles_5m is not None and len(candles_5m) > 0:
             close = candles_5m["close"]
-            ema9 = indicators.calculate_ema(close, 9).iloc[-1]
-            ema21 = indicators.calculate_ema(close, 21).iloc[-1]
-            atr = indicators.get_current_atr(candles_5m)
             price = close.iloc[-1]
-
-            print(f"  5m Candles:")
-            print(f"    Last Close:  ${price:,.2f}")
-            print(f"    EMA 9:       ${ema9:,.2f}")
-            print(f"    EMA 21:      ${ema21:,.2f}")
-            print(f"    EMA Spread:  {abs(ema9 - ema21) / price * 100:.4f}%")
-            print(f"    ATR:         ${atr:,.2f} ({atr / price * 100:.4f}%)")
-
-            # EMA crossover check
-            ema_result = indicators.detect_ema_crossover(candles_5m)
-            print(f"    EMA Signal:  {ema_result['signal'] or 'None'} (strength: {ema_result['strength']:.3f})")
+            print(f"  5m Last Close:  ${price:,.2f}")
 
         if candles_3m is not None and len(candles_3m) > 0:
-            close_3m = candles_3m["close"]
-            rsi = indicators.calculate_rsi(close_3m, config.RSI_PERIOD)
-            rsi_val = rsi.iloc[-1]
+            rsi = indicators.calculate_rsi(candles_3m["close"], config.RSI_PERIOD)
+            print(f"  3m RSI(14):     {rsi.iloc[-1]:.2f}")
 
-            print(f"\n  3m Candles:")
-            print(f"    Last Close:  ${close_3m.iloc[-1]:,.2f}")
-            print(f"    RSI(14):     {rsi_val:.2f}")
-            print(f"    RSI Status:  ", end="")
-            if rsi_val < config.RSI_OVERSOLD:
-                print(f"OVERSOLD (< {config.RSI_OVERSOLD})")
-            elif rsi_val > config.RSI_OVERBOUGHT:
-                print(f"OVERBOUGHT (> {config.RSI_OVERBOUGHT})")
-            else:
-                print(f"Neutral")
-
-            rsi_result = indicators.detect_rsi_signal(candles_3m)
-            print(f"    RSI Signal:  {rsi_result['signal'] or 'None'} (strength: {rsi_result['strength']:.3f})")
-
-        # Orderbook imbalance
         ob = all_data.get("delta_orderbook")
         if ob:
             bid_vol = sum(float(b.get("size", 0)) for b in ob.get("buy", []))
             ask_vol = sum(float(a.get("size", 0)) for a in ob.get("sell", []))
             total = bid_vol + ask_vol
             imbalance = (bid_vol - ask_vol) / total * 100 if total > 0 else 0
-            print(f"\n  Orderbook:")
-            print(f"    Bid Volume:  {bid_vol:,.0f}")
-            print(f"    Ask Volume:  {ask_vol:,.0f}")
-            print(f"    Imbalance:   {imbalance:+.1f}% ({'bids dominate' if imbalance > 0 else 'asks dominate'})")
+            print(f"  Orderbook:      {imbalance:+.1f}% imbalance")
 
-    # ── Step 3: Generate signal ─────────────────────────────────────────────
-    print(f"\n🧠 GENERATING SIGNAL...")
+        fg = all_data.get("fear_greed")
+        if fg:
+            print(f"  Fear & Greed:   {fg['value']} — {fg['classification']}")
+
+    if data_only:
+        print(f"\n  ⏭  --data-only flag set, skipping Claude analysis")
+        print(f"{'='*60}\n")
+        return
+
+    # ── Step 4: Claude analysis ─────────────────────────────────────────────
+    print(f"\n🧠 SENDING TO CLAUDE FOR ANALYSIS...")
     print("─" * 50)
 
-    result = signal_engine.generate_signal(all_data)
-    status = result.get("status", "UNKNOWN")
+    # Pass position state to Claude
+    try:
+        import position_manager
+        pos = position_manager.get_current_position()
+        if pos:
+            print(f"  📍 Active position: {pos['direction']} @ ${pos['entry_price']:,.2f}")
+    except ImportError:
+        pos = None
 
-    print(f"  Status: {status}")
+    analysis = claude_brain.analyze_with_claude(all_data, current_position=pos)
 
-    if status == "SIGNAL":
-        print(f"\n  ⚡ SIGNAL GENERATED!")
-        alerts.dispatch_signal(result)
+    if analysis is None:
+        print(f"  ❌ Claude analysis failed")
+        print(f"{'='*60}\n")
+        return
 
-    elif status == "OUTSIDE_HOURS":
-        print(f"  ⏸  Outside trading hours — {result.get('time', '')}")
-        print(f"     Window: 2:00 PM – 2:00 AM IST")
+    action = analysis.get("action") or analysis.get("decision", "UNKNOWN")
+    confidence = analysis["confidence"]
 
-    elif status == "SIT_OUT":
-        print(f"  ⚠  Sitting out — {result.get('reason', '')}")
+    print(f"\n  Action:         {action}")
+    print(f"  Confidence:     {confidence}/10")
+    print(f"  Reasoning:      {analysis.get('reasoning', '')}")
+    print(f"  Market:         {analysis.get('market_condition', '')}")
+    if action in ["BUY", "SELL"]:
+        print(f"  Entry:          ${(analysis.get('entry_price') or 0):,.2f}")
+        print(f"  Stop-Loss:      ${(analysis.get('stop_loss') or 0):,.2f}")
+        print(f"  Take-Profit:    ${(analysis.get('take_profit') or 0):,.2f}")
+    elif action == "TRAIL_SL":
+        print(f"  New SL:         ${(analysis.get('new_sl') or 0):,.2f}")
+    elif action == "REVERSE":
+        print(f"  Reverse Entry:  ${(analysis.get('reverse_entry') or 0):,.2f}")
+        print(f"  Reverse SL:     ${(analysis.get('reverse_sl') or 0):,.2f}")
+        print(f"  Reverse TP:     ${(analysis.get('reverse_tp') or 0):,.2f}")
+    if analysis.get('risk_warnings'):
+        print(f"  Risk:           {analysis['risk_warnings']}")
 
-    elif status == "COOLDOWN":
-        print(f"  ⏳ Cooldown — {result.get('reason', '')}")
-
-    elif status == "NO_SIGNAL":
-        print(f"  👁  No signal — {result.get('reason', '')}")
-        regime = result.get("regime", {})
-        print(f"     Regime: {regime.get('regime', 'unknown')}")
-        print(f"     Reason: {regime.get('reason', '')}")
-
-    else:
-        print(f"  ❌ {result.get('reason', 'Unknown error')}")
-
-    # ── Step 4: Raw result dump (verbose) ───────────────────────────────────
-    if verbose:
-        print(f"\n📋 RAW SIGNAL RESULT:")
+    if verbose and analysis.get("raw_response"):
+        print(f"\n📋 RAW CLAUDE RESPONSE:")
         print("─" * 50)
-        # Clean print — remove DataFrame objects
-        clean = {}
-        for k, v in result.items():
-            if isinstance(v, dict):
-                clean[k] = v
-            elif isinstance(v, (str, int, float, bool, type(None))):
-                clean[k] = v
-        print(json.dumps(clean, indent=2, default=str))
+        print(analysis["raw_response"])
+
+    # ── Step 5: Ask Y/N if actionable signal ─────────────────────────────────
+    if action in ["BUY", "SELL"]:
+        print()
+        confirmed = trade_tracker.prompt_trade_confirmation(analysis, timeout_seconds=60)
+        if confirmed:
+            claude_brain.record_trade_taken(analysis)
+            print(f"  ✅ Trade recorded!")
 
     print(f"\n{'='*60}")
     print(f"  ✅ Single cycle complete.")
     print(f"{'='*60}\n")
 
-    return result
-
 
 def main():
     parser = argparse.ArgumentParser(description="Run a single bot cycle for testing.")
     parser.add_argument("--verbose", "-v", action="store_true",
-                        help="Show detailed indicator values and raw output")
+                        help="Show detailed indicator values and raw Claude response")
+    parser.add_argument("--data-only", "-d", action="store_true",
+                        help="Only fetch data and compute indicators, skip Claude API call")
     args = parser.parse_args()
 
-    run_single_cycle(verbose=args.verbose)
+    if not args.data_only:
+        if not config.ANTHROPIC_API_KEY or config.ANTHROPIC_API_KEY == "your_anthropic_api_key_here":
+            print("\n  ❌ ANTHROPIC_API_KEY not set in .env")
+            print("  Use --data-only flag to test without Claude, or add your key.\n")
+            sys.exit(1)
+
+    run_single_cycle(verbose=args.verbose, data_only=args.data_only)
 
 
 if __name__ == "__main__":

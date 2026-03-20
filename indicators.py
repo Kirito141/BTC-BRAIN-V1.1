@@ -310,6 +310,160 @@ def detect_regime(df_5m):
 
 
 # =============================================================================
+#  MACD — Moving Average Convergence Divergence
+# =============================================================================
+
+def calculate_macd(series, fast=12, slow=26, signal=9):
+    """
+    Calculate MACD line, signal line, and histogram.
+    
+    Args:
+        series: pandas Series of close prices
+        fast: fast EMA period (default 12)
+        slow: slow EMA period (default 26)
+        signal: signal line EMA period (default 9)
+    
+    Returns:
+        dict: {"macd": float, "signal": float, "histogram": float,
+               "crossover": "bullish"/"bearish"/None}
+    """
+    if series is None or len(series) < slow + signal:
+        return {"macd": 0, "signal_line": 0, "histogram": 0, "crossover": None}
+
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+
+    # Detect crossover
+    crossover = None
+    if len(macd_line) >= 2:
+        curr_macd, prev_macd = macd_line.iloc[-1], macd_line.iloc[-2]
+        curr_sig, prev_sig = signal_line.iloc[-1], signal_line.iloc[-2]
+        if prev_macd <= prev_sig and curr_macd > curr_sig:
+            crossover = "bullish"
+        elif prev_macd >= prev_sig and curr_macd < curr_sig:
+            crossover = "bearish"
+
+    return {
+        "macd": round(float(macd_line.iloc[-1]), 2),
+        "signal_line": round(float(signal_line.iloc[-1]), 2),
+        "histogram": round(float(histogram.iloc[-1]), 2),
+        "crossover": crossover,
+    }
+
+
+# =============================================================================
+#  BOLLINGER BANDS
+# =============================================================================
+
+def calculate_bollinger_bands(series, period=20, std_dev=2.0):
+    """
+    Calculate Bollinger Bands.
+    
+    Returns:
+        dict: {"upper": float, "middle": float, "lower": float,
+               "bandwidth_pct": float, "price_position": float (0-1)}
+    """
+    if series is None or len(series) < period:
+        return {"upper": 0, "middle": 0, "lower": 0, "bandwidth_pct": 0, "price_position": 0.5}
+
+    middle = series.rolling(window=period).mean()
+    std = series.rolling(window=period).std()
+    upper = middle + (std * std_dev)
+    lower = middle - (std * std_dev)
+
+    curr_upper = float(upper.iloc[-1])
+    curr_middle = float(middle.iloc[-1])
+    curr_lower = float(lower.iloc[-1])
+    curr_price = float(series.iloc[-1])
+
+    bandwidth = (curr_upper - curr_lower) / curr_middle * 100 if curr_middle > 0 else 0
+
+    # Price position: 0 = at lower band, 1 = at upper band
+    band_range = curr_upper - curr_lower
+    price_position = (curr_price - curr_lower) / band_range if band_range > 0 else 0.5
+
+    return {
+        "upper": round(curr_upper, 2),
+        "middle": round(curr_middle, 2),
+        "lower": round(curr_lower, 2),
+        "bandwidth_pct": round(bandwidth, 4),
+        "price_position": round(max(0, min(1, price_position)), 3),
+    }
+
+
+# =============================================================================
+#  VWAP — Volume Weighted Average Price (session-based)
+# =============================================================================
+
+def calculate_vwap(df):
+    """
+    Calculate VWAP from OHLCV candle data.
+    Uses typical price × volume / cumulative volume.
+    
+    Returns:
+        float: current VWAP value, or 0 on failure
+    """
+    if df is None or len(df) < 2 or "volume" not in df.columns:
+        return 0.0
+
+    typical_price = (df["high"] + df["low"] + df["close"]) / 3
+    cum_vol = df["volume"].cumsum()
+    cum_tp_vol = (typical_price * df["volume"]).cumsum()
+
+    vwap = cum_tp_vol / cum_vol
+    vwap = vwap.replace([np.inf, -np.inf], np.nan).fillna(0)
+
+    return round(float(vwap.iloc[-1]), 2)
+
+
+# =============================================================================
+#  MULTI-TIMEFRAME EMA (for higher timeframe trend context)
+# =============================================================================
+
+def calculate_higher_tf_emas(df):
+    """
+    Calculate EMA 50 and EMA 200 (or as many as data allows).
+    Used for 15m / 1h candles to give Claude the macro trend.
+    
+    Returns:
+        dict: {"ema50": float, "ema200": float, "trend": str}
+    """
+    if df is None or len(df) < 10:
+        return {"ema50": 0, "ema200": 0, "trend": "unknown"}
+
+    close = df["close"]
+    price = close.iloc[-1]
+
+    ema50 = calculate_ema(close, min(50, len(close) - 1))
+    ema50_val = round(float(ema50.iloc[-1]), 2)
+
+    ema200_val = 0
+    if len(close) >= 30:  # at minimum use what we have
+        period = min(200, len(close) - 1)
+        ema200 = calculate_ema(close, period)
+        ema200_val = round(float(ema200.iloc[-1]), 2)
+
+    # Determine trend
+    trend = "unknown"
+    if ema50_val > 0 and ema200_val > 0:
+        if price > ema50_val > ema200_val:
+            trend = "strong_bullish"
+        elif price > ema50_val:
+            trend = "bullish"
+        elif price < ema50_val < ema200_val:
+            trend = "strong_bearish"
+        elif price < ema50_val:
+            trend = "bearish"
+        else:
+            trend = "neutral"
+
+    return {"ema50": ema50_val, "ema200": ema200_val, "trend": trend}
+
+
+# =============================================================================
 #  SL / TP CALCULATOR
 # =============================================================================
 
