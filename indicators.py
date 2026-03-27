@@ -1,15 +1,20 @@
 """
 =============================================================================
- INDICATORS.PY — Technical Indicator Calculations
+ INDICATORS.PY — Advanced Technical Indicator Suite v2
 =============================================================================
  Pure calculation functions — no API calls, no side effects.
- Takes pandas DataFrames/Series in, returns computed values out.
  
  Indicators:
-   • EMA (Exponential Moving Average)
-   • RSI (Relative Strength Index)
-   • ATR (Average True Range)
-   • Market Regime Detection (trending / ranging / high-vol)
+   • EMA (9, 21, 50, 200)       • RSI (Wilder's)
+   • ATR (Average True Range)    • MACD (12/26/9)
+   • Bollinger Bands (20, 2σ)    • VWAP (session)
+   • Stochastic RSI              • ADX / DI+/DI-
+   • OBV (On Balance Volume)     • Ichimoku Cloud
+   • Pivot Points (standard)     • RSI Divergence detection
+   • Volume Profile              • Support / Resistance levels
+   • Candle Pattern Detection    • Market Regime Detection
+   • Multi-TF EMA context        • Dynamic SL/TP with ATR
+   • Position Sizing
 =============================================================================
 """
 
@@ -23,34 +28,12 @@ import config
 # =============================================================================
 
 def calculate_ema(series, period):
-    """
-    Calculate Exponential Moving Average for a pandas Series.
-    
-    Args:
-        series: pandas Series of prices (typically close prices)
-        period: EMA lookback period (e.g. 9, 21)
-    
-    Returns:
-        pandas Series with EMA values
-    """
+    """Calculate EMA for a pandas Series."""
     return series.ewm(span=period, adjust=False).mean()
 
 
 def detect_ema_crossover(df):
-    """
-    Detect EMA 9/21 crossover signals on a candle DataFrame.
-    
-    Args:
-        df: DataFrame with 'close' column
-    
-    Returns:
-        dict with:
-            - "signal": "BUY" / "SELL" / None
-            - "ema_fast": current fast EMA value
-            - "ema_slow": current slow EMA value
-            - "spread_pct": EMA spread as % of price
-            - "strength": 0.0–1.0 signal strength
-    """
+    """Detect EMA 9/21 crossover signals."""
     if df is None or len(df) < config.EMA_SLOW + 5:
         return {"signal": None, "ema_fast": 0, "ema_slow": 0, "spread_pct": 0, "strength": 0}
 
@@ -58,30 +41,19 @@ def detect_ema_crossover(df):
     ema_fast = calculate_ema(close, config.EMA_FAST)
     ema_slow = calculate_ema(close, config.EMA_SLOW)
 
-    # Current and previous values
-    curr_fast = ema_fast.iloc[-1]
-    curr_slow = ema_slow.iloc[-1]
-    prev_fast = ema_fast.iloc[-2]
-    prev_slow = ema_slow.iloc[-2]
+    curr_fast, curr_slow = ema_fast.iloc[-1], ema_slow.iloc[-1]
+    prev_fast, prev_slow = ema_fast.iloc[-2], ema_slow.iloc[-2]
 
-    # Guard against NaN (can happen with very short or gapped data)
     if any(np.isnan(v) for v in [curr_fast, curr_slow, prev_fast, prev_slow]):
         return {"signal": None, "ema_fast": 0, "ema_slow": 0, "spread_pct": 0, "strength": 0}
 
-    # EMA spread as % of price
     price = close.iloc[-1]
     spread_pct = abs(curr_fast - curr_slow) / price * 100 if price > 0 else 0
 
-    signal = None
-    strength = 0.0
-
-    # Bullish crossover: fast crosses above slow
+    signal, strength = None, 0.0
     if prev_fast <= prev_slow and curr_fast > curr_slow:
         signal = "BUY"
-        # Strength based on how decisively it crossed + volume
-        strength = min(spread_pct / 0.3, 1.0)  # normalize to 0–1
-
-    # Bearish crossover: fast crosses below slow
+        strength = min(spread_pct / 0.3, 1.0)
     elif prev_fast >= prev_slow and curr_fast < curr_slow:
         signal = "SELL"
         strength = min(spread_pct / 0.3, 1.0)
@@ -96,83 +68,510 @@ def detect_ema_crossover(df):
 
 
 # =============================================================================
-#  RSI — Relative Strength Index
+#  RSI — Relative Strength Index (Wilder's smoothing)
 # =============================================================================
 
 def calculate_rsi(series, period=14):
-    """
-    Calculate RSI using Wilder's smoothing method.
-    
-    Args:
-        series: pandas Series of close prices
-        period: RSI lookback (default 14)
-    
-    Returns:
-        pandas Series with RSI values (0–100)
-    """
+    """Calculate RSI using Wilder's smoothing."""
     delta = series.diff()
-
     gain = delta.where(delta > 0, 0.0)
     loss = (-delta).where(delta < 0, 0.0)
-
-    # Wilder's smoothing (equivalent to EMA with alpha = 1/period)
     avg_gain = gain.ewm(alpha=1 / period, min_periods=period).mean()
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period).mean()
-
-    # Avoid division by zero — when avg_loss is 0, RSI is 100 (all gains)
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
-    rsi = rsi.fillna(100)  # all gains, no losses → RSI = 100
-
-    return rsi
+    return rsi.fillna(50)
 
 
-def detect_rsi_signal(df):
-    """
-    Detect RSI mean-reversion signals on a candle DataFrame.
-    
-    Buys on oversold bounces, sells on overbought reversals.
-    Requires RSI to cross BACK from extreme zone (not just touch it).
-    
-    Args:
-        df: DataFrame with 'close' column
-    
-    Returns:
-        dict with:
-            - "signal": "BUY" / "SELL" / None
-            - "rsi": current RSI value
-            - "strength": 0.0–1.0 signal strength
-    """
-    if df is None or len(df) < config.RSI_PERIOD + 5:
+def detect_rsi_signal(df, period=None):
+    """Detect RSI mean-reversion signals (bounce from oversold/overbought)."""
+    period = period or config.RSI_PERIOD
+    if df is None or len(df) < period + 5:
         return {"signal": None, "rsi": 50, "strength": 0}
 
-    close = df["close"]
-    rsi = calculate_rsi(close, config.RSI_PERIOD)
+    rsi = calculate_rsi(df["close"], period)
+    curr_rsi, prev_rsi = rsi.iloc[-1], rsi.iloc[-2]
 
-    curr_rsi = rsi.iloc[-1]
-    prev_rsi = rsi.iloc[-2]
-
-    signal = None
-    strength = 0.0
-
-    # BUY: RSI was oversold and is now bouncing back up
+    signal, strength = None, 0.0
     if prev_rsi < config.RSI_OVERSOLD and curr_rsi >= config.RSI_OVERSOLD:
         signal = "BUY"
-        # Stronger signal if RSI was deeper in oversold territory
         depth = max(0, config.RSI_OVERSOLD - rsi.iloc[-3]) if len(rsi) > 2 else 5
         strength = min(depth / 20, 1.0)
-
-    # SELL: RSI was overbought and is now turning down
     elif prev_rsi > config.RSI_OVERBOUGHT and curr_rsi <= config.RSI_OVERBOUGHT:
         signal = "SELL"
         depth = max(0, rsi.iloc[-3] - config.RSI_OVERBOUGHT) if len(rsi) > 2 else 5
         strength = min(depth / 20, 1.0)
 
+    return {"signal": signal, "rsi": round(curr_rsi, 2), "strength": round(strength, 3)}
+
+
+# =============================================================================
+#  STOCHASTIC RSI
+# =============================================================================
+
+def calculate_stochastic_rsi(series, rsi_period=14, stoch_period=14, k_smooth=3, d_smooth=3):
+    """
+    Stochastic RSI — RSI of RSI for overbought/oversold with momentum.
+    Returns dict with K, D lines and crossover signal.
+    """
+    if series is None or len(series) < rsi_period + stoch_period + 5:
+        return {"k": 50, "d": 50, "signal": None}
+
+    rsi = calculate_rsi(series, rsi_period)
+    rsi_min = rsi.rolling(window=stoch_period).min()
+    rsi_max = rsi.rolling(window=stoch_period).max()
+    rsi_range = rsi_max - rsi_min
+
+    stoch_rsi = ((rsi - rsi_min) / rsi_range.replace(0, np.nan)).fillna(0.5) * 100
+    k_line = stoch_rsi.rolling(window=k_smooth).mean()
+    d_line = k_line.rolling(window=d_smooth).mean()
+
+    k_val = float(k_line.iloc[-1]) if not np.isnan(k_line.iloc[-1]) else 50
+    d_val = float(d_line.iloc[-1]) if not np.isnan(d_line.iloc[-1]) else 50
+
+    # Crossover detection
+    signal = None
+    if len(k_line) >= 2 and len(d_line) >= 2:
+        k_prev, d_prev = k_line.iloc[-2], d_line.iloc[-2]
+        if not (np.isnan(k_prev) or np.isnan(d_prev)):
+            if k_prev <= d_prev and k_val > d_val and k_val < 30:
+                signal = "BUY"
+            elif k_prev >= d_prev and k_val < d_val and k_val > 70:
+                signal = "SELL"
+
+    return {"k": round(k_val, 2), "d": round(d_val, 2), "signal": signal}
+
+
+# =============================================================================
+#  ADX — Average Directional Index (trend strength)
+# =============================================================================
+
+def calculate_adx(df, period=14):
+    """
+    Calculate ADX, +DI, -DI.
+    ADX > 25 = strong trend, ADX < 20 = no trend.
+    """
+    if df is None or len(df) < period * 2:
+        return {"adx": 0, "plus_di": 0, "minus_di": 0, "trend_strength": "none"}
+
+    high, low, close = df["high"], df["low"], df["close"]
+
+    plus_dm = high.diff()
+    minus_dm = -low.diff()
+
+    plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
+    minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
+
+    tr = pd.DataFrame({
+        "hl": high - low,
+        "hc": (high - close.shift()).abs(),
+        "lc": (low - close.shift()).abs(),
+    }).max(axis=1)
+
+    atr = tr.ewm(alpha=1/period, min_periods=period).mean()
+    plus_di = (plus_dm.ewm(alpha=1/period, min_periods=period).mean() / atr * 100).fillna(0)
+    minus_di = (minus_dm.ewm(alpha=1/period, min_periods=period).mean() / atr * 100).fillna(0)
+
+    dx = (abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, np.nan) * 100).fillna(0)
+    adx = dx.ewm(alpha=1/period, min_periods=period).mean()
+
+    adx_val = float(adx.iloc[-1])
+    plus_val = float(plus_di.iloc[-1])
+    minus_val = float(minus_di.iloc[-1])
+
+    if adx_val > 40:
+        strength = "very_strong"
+    elif adx_val > 25:
+        strength = "strong"
+    elif adx_val > 20:
+        strength = "moderate"
+    else:
+        strength = "weak"
+
     return {
-        "signal": signal,
-        "rsi": round(curr_rsi, 2),
-        "strength": round(strength, 3),
+        "adx": round(adx_val, 2),
+        "plus_di": round(plus_val, 2),
+        "minus_di": round(minus_val, 2),
+        "trend_strength": strength,
+        "di_signal": "bullish" if plus_val > minus_val else "bearish",
     }
+
+
+# =============================================================================
+#  OBV — On Balance Volume
+# =============================================================================
+
+def calculate_obv(df):
+    """
+    On Balance Volume — tracks volume flow to confirm price moves.
+    Rising OBV + Rising price = bullish confirmation.
+    """
+    if df is None or len(df) < 10 or "volume" not in df.columns:
+        return {"obv": 0, "obv_ema": 0, "obv_trend": "unknown"}
+
+    close = df["close"]
+    volume = df["volume"]
+
+    obv = pd.Series(0.0, index=df.index)
+    for i in range(1, len(df)):
+        if close.iloc[i] > close.iloc[i-1]:
+            obv.iloc[i] = obv.iloc[i-1] + volume.iloc[i]
+        elif close.iloc[i] < close.iloc[i-1]:
+            obv.iloc[i] = obv.iloc[i-1] - volume.iloc[i]
+        else:
+            obv.iloc[i] = obv.iloc[i-1]
+
+    obv_ema = obv.ewm(span=20, adjust=False).mean()
+
+    # OBV trend: compare last 5 vs previous 5
+    if len(obv) >= 10:
+        recent_avg = obv.iloc[-5:].mean()
+        prev_avg = obv.iloc[-10:-5].mean()
+        if recent_avg > prev_avg * 1.05:
+            trend = "rising"
+        elif recent_avg < prev_avg * 0.95:
+            trend = "falling"
+        else:
+            trend = "flat"
+    else:
+        trend = "unknown"
+
+    return {
+        "obv": round(float(obv.iloc[-1]), 0),
+        "obv_ema": round(float(obv_ema.iloc[-1]), 0),
+        "obv_trend": trend,
+    }
+
+
+# =============================================================================
+#  ICHIMOKU CLOUD
+# =============================================================================
+
+def calculate_ichimoku(df):
+    """
+    Ichimoku Cloud — comprehensive trend/support/resistance system.
+    """
+    if df is None or len(df) < config.ICHIMOKU_SENKOU_B + 5:
+        return {
+            "tenkan": 0, "kijun": 0, "senkou_a": 0, "senkou_b": 0,
+            "chikou": 0, "cloud_color": "none", "price_vs_cloud": "unknown",
+            "tk_cross": None,
+        }
+
+    high, low, close = df["high"], df["low"], df["close"]
+    price = close.iloc[-1]
+
+    # Tenkan-sen (conversion line) — 9 period
+    tenkan = (high.rolling(config.ICHIMOKU_TENKAN).max() +
+              low.rolling(config.ICHIMOKU_TENKAN).min()) / 2
+
+    # Kijun-sen (base line) — 26 period
+    kijun = (high.rolling(config.ICHIMOKU_KIJUN).max() +
+             low.rolling(config.ICHIMOKU_KIJUN).min()) / 2
+
+    # Senkou Span A (leading span A) — average of tenkan & kijun, shifted 26 periods
+    senkou_a = (tenkan + kijun) / 2
+
+    # Senkou Span B (leading span B) — 52 period, shifted 26 periods
+    senkou_b = (high.rolling(config.ICHIMOKU_SENKOU_B).max() +
+                low.rolling(config.ICHIMOKU_SENKOU_B).min()) / 2
+
+    t_val = float(tenkan.iloc[-1])
+    k_val = float(kijun.iloc[-1])
+    sa_val = float(senkou_a.iloc[-1])
+    sb_val = float(senkou_b.iloc[-1])
+
+    # Cloud color
+    cloud_color = "green" if sa_val > sb_val else "red"
+
+    # Price vs cloud
+    cloud_top = max(sa_val, sb_val)
+    cloud_bottom = min(sa_val, sb_val)
+    if price > cloud_top:
+        price_vs_cloud = "above"
+    elif price < cloud_bottom:
+        price_vs_cloud = "below"
+    else:
+        price_vs_cloud = "inside"
+
+    # Tenkan/Kijun cross
+    tk_cross = None
+    if len(tenkan) >= 2 and len(kijun) >= 2:
+        t_prev, k_prev = tenkan.iloc[-2], kijun.iloc[-2]
+        if not (np.isnan(t_prev) or np.isnan(k_prev)):
+            if t_prev <= k_prev and t_val > k_val:
+                tk_cross = "bullish"
+            elif t_prev >= k_prev and t_val < k_val:
+                tk_cross = "bearish"
+
+    return {
+        "tenkan": round(t_val, 2),
+        "kijun": round(k_val, 2),
+        "senkou_a": round(sa_val, 2),
+        "senkou_b": round(sb_val, 2),
+        "cloud_color": cloud_color,
+        "price_vs_cloud": price_vs_cloud,
+        "tk_cross": tk_cross,
+    }
+
+
+# =============================================================================
+#  PIVOT POINTS (Standard)
+# =============================================================================
+
+def calculate_pivot_points(df):
+    """
+    Calculate standard pivot points from the previous session's OHLC.
+    Provides S1/S2/S3, R1/R2/R3 as support/resistance levels.
+    """
+    if df is None or len(df) < 2:
+        return {"pivot": 0, "r1": 0, "r2": 0, "r3": 0, "s1": 0, "s2": 0, "s3": 0}
+
+    # Use last completed candle's high/low/close
+    h = float(df["high"].iloc[-2])
+    l = float(df["low"].iloc[-2])
+    c = float(df["close"].iloc[-2])
+
+    pivot = (h + l + c) / 3
+    r1 = 2 * pivot - l
+    s1 = 2 * pivot - h
+    r2 = pivot + (h - l)
+    s2 = pivot - (h - l)
+    r3 = h + 2 * (pivot - l)
+    s3 = l - 2 * (h - pivot)
+
+    return {
+        "pivot": round(pivot, 2),
+        "r1": round(r1, 2), "r2": round(r2, 2), "r3": round(r3, 2),
+        "s1": round(s1, 2), "s2": round(s2, 2), "s3": round(s3, 2),
+    }
+
+
+# =============================================================================
+#  RSI DIVERGENCE DETECTION
+# =============================================================================
+
+def detect_rsi_divergence(df, rsi_period=14, lookback=20):
+    """
+    Detect bullish and bearish RSI divergences.
+    - Bullish: price makes lower low but RSI makes higher low
+    - Bearish: price makes higher high but RSI makes lower high
+    """
+    if df is None or len(df) < rsi_period + lookback:
+        return {"divergence": None, "type": None, "strength": 0}
+
+    close = df["close"]
+    rsi = calculate_rsi(close, rsi_period)
+
+    # Get recent segment
+    price_seg = close.iloc[-lookback:].values
+    rsi_seg = rsi.iloc[-lookback:].values
+
+    # Find local minima and maxima (simple method)
+    def find_extrema(arr, is_max=True):
+        extrema = []
+        for i in range(2, len(arr) - 2):
+            if is_max:
+                if arr[i] > arr[i-1] and arr[i] > arr[i-2] and arr[i] > arr[i+1] and arr[i] > arr[i+2]:
+                    extrema.append((i, arr[i]))
+            else:
+                if arr[i] < arr[i-1] and arr[i] < arr[i-2] and arr[i] < arr[i+1] and arr[i] < arr[i+2]:
+                    extrema.append((i, arr[i]))
+        return extrema
+
+    # Bullish divergence: check lows
+    price_lows = find_extrema(price_seg, is_max=False)
+    rsi_lows = find_extrema(rsi_seg, is_max=False)
+
+    if len(price_lows) >= 2 and len(rsi_lows) >= 2:
+        p1, p2 = price_lows[-2], price_lows[-1]
+        r1, r2 = rsi_lows[-2], rsi_lows[-1]
+        if p2[1] < p1[1] and r2[1] > r1[1]:
+            strength = abs(r2[1] - r1[1]) / 10  # normalize
+            return {"divergence": "bullish", "type": "regular", "strength": min(round(strength, 2), 1.0)}
+
+    # Bearish divergence: check highs
+    price_highs = find_extrema(price_seg, is_max=True)
+    rsi_highs = find_extrema(rsi_seg, is_max=True)
+
+    if len(price_highs) >= 2 and len(rsi_highs) >= 2:
+        p1, p2 = price_highs[-2], price_highs[-1]
+        r1, r2 = rsi_highs[-2], rsi_highs[-1]
+        if p2[1] > p1[1] and r2[1] < r1[1]:
+            strength = abs(r1[1] - r2[1]) / 10
+            return {"divergence": "bearish", "type": "regular", "strength": min(round(strength, 2), 1.0)}
+
+    return {"divergence": None, "type": None, "strength": 0}
+
+
+# =============================================================================
+#  VOLUME ANALYSIS
+# =============================================================================
+
+def analyze_volume(df, lookback=20):
+    """
+    Analyze volume patterns — relative volume, volume trend, climax detection.
+    """
+    if df is None or len(df) < lookback or "volume" not in df.columns:
+        return {"relative_volume": 1.0, "volume_trend": "unknown", "climax": False}
+
+    vol = df["volume"]
+    avg_vol = vol.iloc[-lookback:].mean()
+    current_vol = vol.iloc[-1]
+    relative = current_vol / avg_vol if avg_vol > 0 else 1.0
+
+    # Volume trend (last 5 vs previous 5)
+    recent_avg = vol.iloc[-5:].mean()
+    prior_avg = vol.iloc[-10:-5].mean() if len(vol) >= 10 else avg_vol
+    if recent_avg > prior_avg * 1.2:
+        trend = "increasing"
+    elif recent_avg < prior_avg * 0.8:
+        trend = "decreasing"
+    else:
+        trend = "stable"
+
+    # Volume climax: > 3x average
+    climax = relative > 3.0
+
+    return {
+        "relative_volume": round(relative, 2),
+        "volume_trend": trend,
+        "climax": climax,
+        "avg_volume": round(avg_vol, 0),
+        "current_volume": round(current_vol, 0),
+    }
+
+
+# =============================================================================
+#  SUPPORT / RESISTANCE LEVELS
+# =============================================================================
+
+def find_support_resistance(df, lookback=50, num_levels=3):
+    """
+    Find key support and resistance levels using price clustering.
+    """
+    if df is None or len(df) < lookback:
+        return {"support": [], "resistance": []}
+
+    close = df["close"]
+    high = df["high"]
+    low = df["low"]
+    price = close.iloc[-1]
+
+    # Collect all swing highs and lows
+    prices = []
+    for i in range(2, min(lookback, len(df)) - 2):
+        idx = len(df) - lookback + i
+        if idx < 2 or idx >= len(df) - 2:
+            continue
+        if high.iloc[idx] > high.iloc[idx-1] and high.iloc[idx] > high.iloc[idx+1]:
+            prices.append(float(high.iloc[idx]))
+        if low.iloc[idx] < low.iloc[idx-1] and low.iloc[idx] < low.iloc[idx+1]:
+            prices.append(float(low.iloc[idx]))
+
+    if not prices:
+        return {"support": [], "resistance": []}
+
+    # Cluster nearby prices (within 0.1% of each other)
+    prices.sort()
+    clusters = []
+    current_cluster = [prices[0]]
+
+    for p in prices[1:]:
+        if (p - current_cluster[-1]) / current_cluster[-1] < 0.001:
+            current_cluster.append(p)
+        else:
+            clusters.append(sum(current_cluster) / len(current_cluster))
+            current_cluster = [p]
+    clusters.append(sum(current_cluster) / len(current_cluster))
+
+    # Sort clusters by how many prices touched them (importance)
+    support = sorted([c for c in clusters if c < price], reverse=True)[:num_levels]
+    resistance = sorted([c for c in clusters if c > price])[:num_levels]
+
+    return {
+        "support": [round(s, 2) for s in support],
+        "resistance": [round(r, 2) for r in resistance],
+    }
+
+
+# =============================================================================
+#  CANDLE PATTERN DETECTION
+# =============================================================================
+
+def detect_candle_patterns(df):
+    """
+    Detect common candlestick patterns on the last few candles.
+    """
+    if df is None or len(df) < 5:
+        return {"patterns": [], "bias": "neutral"}
+
+    o = df["open"].values
+    h = df["high"].values
+    l = df["low"].values
+    c = df["close"].values
+    patterns = []
+
+    # Last candle
+    i = -1
+    body = abs(c[i] - o[i])
+    upper_wick = h[i] - max(o[i], c[i])
+    lower_wick = min(o[i], c[i]) - l[i]
+    total_range = h[i] - l[i]
+
+    if total_range == 0:
+        return {"patterns": ["doji"], "bias": "neutral"}
+
+    body_pct = body / total_range
+
+    # Doji
+    if body_pct < 0.1:
+        patterns.append("doji")
+
+    # Hammer / Hanging Man
+    if lower_wick > body * 2 and upper_wick < body * 0.5 and body_pct > 0.1:
+        if c[i] > o[i]:
+            patterns.append("hammer_bullish")
+        else:
+            patterns.append("hanging_man_bearish")
+
+    # Shooting Star / Inverted Hammer
+    if upper_wick > body * 2 and lower_wick < body * 0.5 and body_pct > 0.1:
+        if c[i] < o[i]:
+            patterns.append("shooting_star_bearish")
+        else:
+            patterns.append("inverted_hammer_bullish")
+
+    # Engulfing (2-candle)
+    if len(df) >= 2:
+        prev_body = abs(c[-2] - o[-2])
+        if c[-1] > o[-1] and c[-2] < o[-2] and body > prev_body * 1.2:
+            if c[-1] > o[-2] and o[-1] < c[-2]:
+                patterns.append("bullish_engulfing")
+        elif c[-1] < o[-1] and c[-2] > o[-2] and body > prev_body * 1.2:
+            if c[-1] < o[-2] and o[-1] > c[-2]:
+                patterns.append("bearish_engulfing")
+
+    # Three white soldiers / Three black crows
+    if len(df) >= 3:
+        if all(c[-j] > o[-j] for j in range(1, 4)):
+            if c[-1] > c[-2] > c[-3]:
+                patterns.append("three_white_soldiers_bullish")
+        if all(c[-j] < o[-j] for j in range(1, 4)):
+            if c[-1] < c[-2] < c[-3]:
+                patterns.append("three_black_crows_bearish")
+
+    # Determine bias
+    bullish = sum(1 for p in patterns if "bullish" in p)
+    bearish = sum(1 for p in patterns if "bearish" in p)
+    if bullish > bearish:
+        bias = "bullish"
+    elif bearish > bullish:
+        bias = "bearish"
+    else:
+        bias = "neutral"
+
+    return {"patterns": patterns, "bias": bias}
 
 
 # =============================================================================
@@ -180,153 +579,32 @@ def detect_rsi_signal(df):
 # =============================================================================
 
 def calculate_atr(df, period=14):
-    """
-    Calculate Average True Range.
-    
-    ATR measures volatility using the greatest of:
-      • Current High - Current Low
-      • |Current High - Previous Close|
-      • |Current Low - Previous Close|
-    
-    Args:
-        df: DataFrame with 'high', 'low', 'close' columns
-        period: ATR lookback period
-    
-    Returns:
-        pandas Series with ATR values, or None if insufficient data
-    """
+    """Calculate ATR from OHLCV DataFrame."""
     if df is None or len(df) < period + 1:
-        return None
+        return pd.Series(dtype=float)
 
-    high = df["high"]
-    low = df["low"]
-    close = df["close"]
+    high, low, close = df["high"], df["low"], df["close"]
+    tr = pd.DataFrame({
+        "hl": high - low,
+        "hc": (high - close.shift()).abs(),
+        "lc": (low - close.shift()).abs(),
+    }).max(axis=1)
 
-    # True Range components
-    tr1 = high - low
-    tr2 = (high - close.shift(1)).abs()
-    tr3 = (low - close.shift(1)).abs()
-
-    # True Range = max of the three
-    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-
-    # ATR = Wilder's smoothed average of True Range
-    atr = true_range.ewm(alpha=1 / period, min_periods=period).mean()
-
-    return atr
+    return tr.ewm(alpha=1/period, min_periods=period).mean()
 
 
-def get_current_atr(df, period=None):
-    """
-    Get the latest ATR value from a candle DataFrame.
-    
-    Returns:
-        float ATR value, or 0.0 on failure
-    """
-    if period is None:
-        period = config.REGIME_ATR_PERIOD
-
+def get_current_atr(df, period=14):
+    """Get current ATR value."""
     atr = calculate_atr(df, period)
-    if atr is None or atr.empty:
-        return 0.0
-
-    return round(float(atr.iloc[-1]), 2)
+    return round(float(atr.iloc[-1]), 2) if len(atr) > 0 else 0.0
 
 
 # =============================================================================
-#  MARKET REGIME DETECTION
-# =============================================================================
-
-def detect_regime(df_5m):
-    """
-    Determine market regime using EMA spread and ATR.
-    
-    Logic:
-      1. Calculate ATR as % of price
-      2. If ATR% > HIGH_VOL_THRESHOLD → "high_volatility" (sit out)
-      3. Calculate EMA 9/21 spread as % of price
-      4. If spread > TREND_THRESHOLD → "trending"
-      5. Otherwise → "ranging"
-    
-    Args:
-        df_5m: DataFrame with 5-minute OHLCV candles
-    
-    Returns:
-        dict with:
-            - "regime": "trending" / "ranging" / "high_volatility"
-            - "atr_pct": ATR as % of price
-            - "ema_spread_pct": EMA spread as % of price
-            - "reason": human-readable explanation
-    """
-    if df_5m is None or len(df_5m) < config.EMA_SLOW + 5:
-        return {
-            "regime": "unknown",
-            "atr_pct": 0,
-            "ema_spread_pct": 0,
-            "reason": "Insufficient data for regime detection",
-        }
-
-    close = df_5m["close"]
-    price = close.iloc[-1]
-
-    if price <= 0:
-        return {"regime": "unknown", "atr_pct": 0, "ema_spread_pct": 0, "reason": "Invalid price"}
-
-    # ── Step 1: ATR as percentage of price ──────────────────────────────────
-    atr = get_current_atr(df_5m, config.REGIME_ATR_PERIOD)
-    atr_pct = (atr / price) * 100 if price > 0 else 0
-
-    # ── Step 2: Check for high volatility → sit out ─────────────────────────
-    if atr_pct > config.REGIME_ATR_HIGH_VOL_THRESHOLD:
-        return {
-            "regime": "high_volatility",
-            "atr_pct": round(atr_pct, 4),
-            "ema_spread_pct": 0,
-            "reason": f"ATR {atr_pct:.3f}% exceeds {config.REGIME_ATR_HIGH_VOL_THRESHOLD}% threshold — too volatile",
-        }
-
-    # ── Step 3: EMA spread ──────────────────────────────────────────────────
-    ema_fast = calculate_ema(close, config.EMA_FAST)
-    ema_slow = calculate_ema(close, config.EMA_SLOW)
-    spread = abs(ema_fast.iloc[-1] - ema_slow.iloc[-1])
-    spread_pct = (spread / price) * 100
-
-    # ── Step 4: Trending vs. Ranging ────────────────────────────────────────
-    if spread_pct > config.REGIME_EMA_SPREAD_TREND_THRESHOLD:
-        direction = "bullish" if ema_fast.iloc[-1] > ema_slow.iloc[-1] else "bearish"
-        return {
-            "regime": "trending",
-            "atr_pct": round(atr_pct, 4),
-            "ema_spread_pct": round(spread_pct, 4),
-            "reason": f"EMA spread {spread_pct:.3f}% > {config.REGIME_EMA_SPREAD_TREND_THRESHOLD}% — {direction} trend detected",
-        }
-    else:
-        return {
-            "regime": "ranging",
-            "atr_pct": round(atr_pct, 4),
-            "ema_spread_pct": round(spread_pct, 4),
-            "reason": f"EMA spread {spread_pct:.3f}% ≤ {config.REGIME_EMA_SPREAD_TREND_THRESHOLD}% — range-bound market",
-        }
-
-
-# =============================================================================
-#  MACD — Moving Average Convergence Divergence
+#  MACD
 # =============================================================================
 
 def calculate_macd(series, fast=12, slow=26, signal=9):
-    """
-    Calculate MACD line, signal line, and histogram.
-    
-    Args:
-        series: pandas Series of close prices
-        fast: fast EMA period (default 12)
-        slow: slow EMA period (default 26)
-        signal: signal line EMA period (default 9)
-    
-    Returns:
-        dict: {"macd": float, "signal": float, "histogram": float,
-               "crossover": "bullish"/"bearish"/None}
-    """
+    """Calculate MACD, signal line, histogram, and crossover."""
     if series is None or len(series) < slow + signal:
         return {"macd": 0, "signal_line": 0, "histogram": 0, "crossover": None}
 
@@ -336,21 +614,30 @@ def calculate_macd(series, fast=12, slow=26, signal=9):
     signal_line = macd_line.ewm(span=signal, adjust=False).mean()
     histogram = macd_line - signal_line
 
-    # Detect crossover
     crossover = None
     if len(macd_line) >= 2:
-        curr_macd, prev_macd = macd_line.iloc[-1], macd_line.iloc[-2]
-        curr_sig, prev_sig = signal_line.iloc[-1], signal_line.iloc[-2]
-        if prev_macd <= prev_sig and curr_macd > curr_sig:
+        curr_m, prev_m = macd_line.iloc[-1], macd_line.iloc[-2]
+        curr_s, prev_s = signal_line.iloc[-1], signal_line.iloc[-2]
+        if prev_m <= prev_s and curr_m > curr_s:
             crossover = "bullish"
-        elif prev_macd >= prev_sig and curr_macd < curr_sig:
+        elif prev_m >= prev_s and curr_m < curr_s:
             crossover = "bearish"
+
+    # Histogram momentum (increasing or decreasing)
+    hist_momentum = None
+    if len(histogram) >= 3:
+        h1, h2, h3 = histogram.iloc[-3], histogram.iloc[-2], histogram.iloc[-1]
+        if h3 > h2 > h1:
+            hist_momentum = "increasing"
+        elif h3 < h2 < h1:
+            hist_momentum = "decreasing"
 
     return {
         "macd": round(float(macd_line.iloc[-1]), 2),
         "signal_line": round(float(signal_line.iloc[-1]), 2),
         "histogram": round(float(histogram.iloc[-1]), 2),
         "crossover": crossover,
+        "hist_momentum": hist_momentum,
     }
 
 
@@ -359,15 +646,9 @@ def calculate_macd(series, fast=12, slow=26, signal=9):
 # =============================================================================
 
 def calculate_bollinger_bands(series, period=20, std_dev=2.0):
-    """
-    Calculate Bollinger Bands.
-    
-    Returns:
-        dict: {"upper": float, "middle": float, "lower": float,
-               "bandwidth_pct": float, "price_position": float (0-1)}
-    """
+    """Calculate Bollinger Bands with bandwidth and %B."""
     if series is None or len(series) < period:
-        return {"upper": 0, "middle": 0, "lower": 0, "bandwidth_pct": 0, "price_position": 0.5}
+        return {"upper": 0, "middle": 0, "lower": 0, "bandwidth_pct": 0, "price_position": 0.5, "squeeze": False}
 
     middle = series.rolling(window=period).mean()
     std = series.rolling(window=period).std()
@@ -380,10 +661,16 @@ def calculate_bollinger_bands(series, period=20, std_dev=2.0):
     curr_price = float(series.iloc[-1])
 
     bandwidth = (curr_upper - curr_lower) / curr_middle * 100 if curr_middle > 0 else 0
-
-    # Price position: 0 = at lower band, 1 = at upper band
     band_range = curr_upper - curr_lower
     price_position = (curr_price - curr_lower) / band_range if band_range > 0 else 0.5
+
+    # Squeeze detection: bandwidth in lowest 20% of recent range
+    bw_series = ((upper - lower) / middle * 100)
+    if len(bw_series) >= 20:
+        bw_min = bw_series.iloc[-20:].min()
+        squeeze = bandwidth <= bw_min * 1.1
+    else:
+        squeeze = bandwidth < 2.0
 
     return {
         "upper": round(curr_upper, 2),
@@ -391,46 +678,33 @@ def calculate_bollinger_bands(series, period=20, std_dev=2.0):
         "lower": round(curr_lower, 2),
         "bandwidth_pct": round(bandwidth, 4),
         "price_position": round(max(0, min(1, price_position)), 3),
+        "squeeze": squeeze,
     }
 
 
 # =============================================================================
-#  VWAP — Volume Weighted Average Price (session-based)
+#  VWAP
 # =============================================================================
 
 def calculate_vwap(df):
-    """
-    Calculate VWAP from OHLCV candle data.
-    Uses typical price × volume / cumulative volume.
-    
-    Returns:
-        float: current VWAP value, or 0 on failure
-    """
+    """Calculate VWAP from OHLCV data."""
     if df is None or len(df) < 2 or "volume" not in df.columns:
         return 0.0
 
     typical_price = (df["high"] + df["low"] + df["close"]) / 3
     cum_vol = df["volume"].cumsum()
     cum_tp_vol = (typical_price * df["volume"]).cumsum()
-
     vwap = cum_tp_vol / cum_vol
     vwap = vwap.replace([np.inf, -np.inf], np.nan).fillna(0)
-
     return round(float(vwap.iloc[-1]), 2)
 
 
 # =============================================================================
-#  MULTI-TIMEFRAME EMA (for higher timeframe trend context)
+#  MULTI-TIMEFRAME EMA
 # =============================================================================
 
 def calculate_higher_tf_emas(df):
-    """
-    Calculate EMA 50 and EMA 200 (or as many as data allows).
-    Used for 15m / 1h candles to give Claude the macro trend.
-    
-    Returns:
-        dict: {"ema50": float, "ema200": float, "trend": str}
-    """
+    """Calculate EMA 50 and EMA 200 for higher timeframe trend context."""
     if df is None or len(df) < 10:
         return {"ema50": 0, "ema200": 0, "trend": "unknown"}
 
@@ -441,12 +715,11 @@ def calculate_higher_tf_emas(df):
     ema50_val = round(float(ema50.iloc[-1]), 2)
 
     ema200_val = 0
-    if len(close) >= 30:  # at minimum use what we have
+    if len(close) >= 30:
         period = min(200, len(close) - 1)
         ema200 = calculate_ema(close, period)
         ema200_val = round(float(ema200.iloc[-1]), 2)
 
-    # Determine trend
     trend = "unknown"
     if ema50_val > 0 and ema200_val > 0:
         if price > ema50_val > ema200_val:
@@ -464,104 +737,116 @@ def calculate_higher_tf_emas(df):
 
 
 # =============================================================================
+#  MARKET REGIME DETECTION
+# =============================================================================
+
+def detect_regime(df_5m):
+    """Detect market regime: trending / ranging / high_volatility."""
+    if df_5m is None or len(df_5m) < config.EMA_SLOW + 5:
+        return {"regime": "unknown", "atr_pct": 0, "ema_spread_pct": 0, "reason": "Insufficient data"}
+
+    close = df_5m["close"]
+    price = close.iloc[-1]
+    if price <= 0:
+        return {"regime": "unknown", "atr_pct": 0, "ema_spread_pct": 0, "reason": "Invalid price"}
+
+    atr = get_current_atr(df_5m, config.REGIME_ATR_PERIOD)
+    atr_pct = (atr / price) * 100
+
+    if atr_pct > config.REGIME_ATR_HIGH_VOL_THRESHOLD:
+        return {
+            "regime": "high_volatility",
+            "atr_pct": round(atr_pct, 4),
+            "ema_spread_pct": 0,
+            "reason": f"ATR {atr_pct:.3f}% > {config.REGIME_ATR_HIGH_VOL_THRESHOLD}% — extreme volatility",
+        }
+
+    ema_fast = calculate_ema(close, config.EMA_FAST)
+    ema_slow = calculate_ema(close, config.EMA_SLOW)
+    spread_pct = abs(ema_fast.iloc[-1] - ema_slow.iloc[-1]) / price * 100
+
+    if spread_pct > config.REGIME_EMA_SPREAD_TREND_THRESHOLD:
+        direction = "bullish" if ema_fast.iloc[-1] > ema_slow.iloc[-1] else "bearish"
+        return {
+            "regime": "trending",
+            "atr_pct": round(atr_pct, 4),
+            "ema_spread_pct": round(spread_pct, 4),
+            "reason": f"EMA spread {spread_pct:.3f}% > {config.REGIME_EMA_SPREAD_TREND_THRESHOLD}% — {direction} trend",
+        }
+
+    return {
+        "regime": "ranging",
+        "atr_pct": round(atr_pct, 4),
+        "ema_spread_pct": round(spread_pct, 4),
+        "reason": f"EMA spread {spread_pct:.3f}% ≤ {config.REGIME_EMA_SPREAD_TREND_THRESHOLD}% — range-bound",
+    }
+
+
+# =============================================================================
 #  SL / TP CALCULATOR
 # =============================================================================
 
 def calculate_sl_tp(entry_price, direction, atr_value):
     """
-    Calculate dynamic stop-loss and take-profit levels.
-    
-    Uses ATR-based distances with minimum floor enforcement.
-    
-    Args:
-        entry_price: float — exact entry price
-        direction: "BUY" or "SELL"
-        atr_value: float — current ATR value
-    
-    Returns:
-        dict: {"stop_loss": float, "take_profit": float,
-               "sl_distance_pct": float, "tp_distance_pct": float,
-               "sl_method": str, "tp_method": str}
+    Dynamic SL/TP with ATR-based distances, min/max floors.
     """
-    # ── ATR-based distances ─────────────────────────────────────────────────
-    sl_distance_atr = atr_value * config.SL_ATR_MULTIPLIER
-    tp_distance_atr = atr_value * config.TP_ATR_MULTIPLIER
+    sl_distance = atr_value * config.SL_ATR_MULTIPLIER
+    tp_distance = atr_value * config.TP_ATR_MULTIPLIER
 
-    # ── Minimum floor distances ─────────────────────────────────────────────
-    sl_distance_floor = entry_price * (config.SL_MIN_PERCENT / 100)
-    tp_distance_floor = entry_price * (config.TP_MIN_PERCENT / 100)
+    # Enforce min floors
+    sl_min = entry_price * (config.SL_MIN_PERCENT / 100)
+    tp_min = entry_price * (config.TP_MIN_PERCENT / 100)
+    sl_distance = max(sl_distance, sl_min)
+    tp_distance = max(tp_distance, tp_min)
 
-    # ── Use whichever is larger ─────────────────────────────────────────────
-    sl_distance = max(sl_distance_atr, sl_distance_floor)
-    tp_distance = max(tp_distance_atr, tp_distance_floor)
+    # Enforce max caps
+    sl_max = entry_price * (config.SL_MAX_PERCENT / 100)
+    tp_max = entry_price * (config.TP_MAX_PERCENT / 100)
+    sl_distance = min(sl_distance, sl_max)
+    tp_distance = min(tp_distance, tp_max)
 
-    sl_method = "ATR-dynamic" if sl_distance_atr >= sl_distance_floor else "floor (0.25%)"
-    tp_method = "ATR-dynamic" if tp_distance_atr >= tp_distance_floor else "floor (0.50%)"
-
-    # ── Calculate actual price levels ───────────────────────────────────────
     if direction == "BUY":
         stop_loss = entry_price - sl_distance
         take_profit = entry_price + tp_distance
-    else:  # SELL
+    else:
         stop_loss = entry_price + sl_distance
         take_profit = entry_price - tp_distance
+
+    sl_pct = sl_distance / entry_price * 100
+    tp_pct = tp_distance / entry_price * 100
+    sl_method = "ATR" if sl_distance > sl_min else "floor"
+    tp_method = "ATR" if tp_distance > tp_min else "floor"
 
     return {
         "stop_loss": round(stop_loss, 2),
         "take_profit": round(take_profit, 2),
-        "sl_distance_pct": round((sl_distance / entry_price) * 100, 4),
-        "tp_distance_pct": round((tp_distance / entry_price) * 100, 4),
+        "sl_distance": round(sl_distance, 2),
+        "tp_distance": round(tp_distance, 2),
+        "sl_pct": round(sl_pct, 4),
+        "tp_pct": round(tp_pct, 4),
         "sl_method": sl_method,
         "tp_method": tp_method,
+        "risk_reward_ratio": round(tp_distance / sl_distance, 2) if sl_distance > 0 else 0,
     }
 
 
 # =============================================================================
-#  POSITION SIZE CALCULATOR
+#  POSITION SIZING
 # =============================================================================
 
-def calculate_position_size(entry_price, balance_usdt=None):
-    """
-    Calculate contract quantity for BTCUSD inverse perpetual.
-    
-    For BTCUSD on Delta Exchange:
-      • Contract value = 0.001 BTC per lot
-      • Position in USD = (number_of_lots × 0.001) × BTC_price
-      • With leverage: margin_required = position_value / leverage
-    
-    Formula:
-      usable_balance = balance × 50%
-      position_value = usable_balance × leverage
-      lots = position_value / (contract_value × entry_price)
-    
-    Args:
-        entry_price: current BTC price in USD
-        balance_usdt: available balance (uses default if None)
-    
-    Returns:
-        dict: {"contracts": int, "position_value_usd": float,
-               "margin_used_usd": float, "balance_used": float}
-    """
-    if balance_usdt is None:
-        balance_usdt = config.DEFAULT_BALANCE_USDT
+def calculate_position_size(entry_price, balance_usdt=None, leverage=None):
+    """Calculate position size in contracts."""
+    balance = balance_usdt or config.DEFAULT_BALANCE_USDT
+    lev = leverage or config.LEVERAGE
+    usable_balance = balance * (config.BALANCE_USAGE_PERCENT / 100)
 
-    if entry_price <= 0:
-        return {"contracts": 0, "position_value_usd": 0, "margin_used_usd": 0, "balance_used": 0}
-
-    # 50% of balance
-    usable_balance = balance_usdt * (config.BALANCE_USAGE_PERCENT / 100)
-
-    # Total position value with leverage
-    position_value = usable_balance * config.LEVERAGE
-
-    # BTCUSD inverse perpetual: 1 lot = 0.001 BTC
-    # Number of lots = position_value_usd / (0.001 × price_usd)
-    contract_value_usd = 0.001 * entry_price
-    lots = int(position_value / contract_value_usd) if contract_value_usd > 0 else 0
+    position_value_usd = usable_balance * lev
+    contracts = int(position_value_usd / entry_price) if entry_price > 0 else 0
+    margin_used = position_value_usd / lev if lev > 0 else 0
 
     return {
-        "contracts": lots,
-        "position_value_usd": round(lots * contract_value_usd, 2),
-        "margin_used_usd": round((lots * contract_value_usd) / config.LEVERAGE, 2),
-        "balance_used": round(usable_balance, 2),
+        "contracts": max(1, contracts),
+        "position_value_usd": round(position_value_usd, 2),
+        "margin_used_usd": round(margin_used, 2),
+        "leverage": lev,
     }
