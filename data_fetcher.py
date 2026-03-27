@@ -1,18 +1,11 @@
 """
 =============================================================================
- DATA_FETCHER.PY v2 — Multi-Source Data Aggregator
+ DATA_FETCHER.PY v3 — Multi-Source Data Aggregator
 =============================================================================
- Fetches from:
-   • Delta Exchange — candles (5m/15m/1h/4h), ticker, orderbook, trades
-   • Binance — spot price, klines, futures intelligence (L/S, top traders,
-               taker volume, OI), aggregated trades, funding rate history
-   • Alternative.me — Fear & Greed Index (7-day trend)
-   • CoinGecko — BTC dominance & global volume
-   
- Features:
-   • Concurrent fetching where possible
-   • Graceful degradation — bot continues if any source fails
-   • Smart caching to respect rate limits
+ Same sources as v2 with:
+   • Better cache management (120s for Binance futures)
+   • Delta-Binance spread monitoring
+   • Order flow delta from trade tape
 =============================================================================
 """
 
@@ -23,15 +16,13 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import config
 
-# ── Caches ──────────────────────────────────────────────────────────────────
+# ── Caches ──────────────────────────────────────────────────────────────
 _coingecko_cache = {"data": None, "timestamp": 0}
 _binance_futures_cache = {"data": None, "timestamp": 0}
 _fear_greed_cache = {"data": None, "timestamp": 0}
-FEAR_GREED_CACHE_SECONDS = 600  # 10 min
 
 
 def _safe_request(url, params=None, timeout=10, source_name="API"):
-    """HTTP GET with error handling. Returns JSON or None."""
     try:
         response = requests.get(url, params=params, timeout=timeout)
         response.raise_for_status()
@@ -52,7 +43,6 @@ def _safe_request(url, params=None, timeout=10, source_name="API"):
 # =============================================================================
 
 def fetch_delta_candles(resolution="5m", count=100):
-    """Fetch OHLCV candles from Delta Exchange."""
     end_ts = int(time.time())
     res_map = {"1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400}
     interval_secs = res_map.get(resolution, 300)
@@ -63,7 +53,6 @@ def fetch_delta_candles(resolution="5m", count=100):
 
     data = _safe_request(url, params=params, source_name=f"Delta {resolution}")
     if data is None or not data.get("success") or not data.get("result"):
-        # Retry with numeric format
         if "h" in resolution:
             params["resolution"] = str(int(resolution.replace("h", "")) * 60)
         else:
@@ -88,12 +77,10 @@ def fetch_delta_candles(resolution="5m", count=100):
 
 
 def fetch_delta_ticker():
-    """Fetch current BTCUSD ticker from Delta Exchange."""
     url = f"{config.DELTA_BASE_URL}/v2/tickers/{config.DELTA_SYMBOL}"
     data = _safe_request(url, source_name="Delta Ticker")
     if data is None or not data.get("success"):
         return None
-
     r = data.get("result", {})
     return {
         "mark_price": float(r.get("mark_price", 0)),
@@ -107,14 +94,11 @@ def fetch_delta_ticker():
         "funding_rate": float(r.get("funding_rate", 0) or 0),
         "product_id": r.get("product_id", config.DELTA_PRODUCT_ID),
         "symbol": r.get("symbol", config.DELTA_SYMBOL),
-        "price_band_upper": float(r.get("price_band", {}).get("upper_limit", 0) or 0),
-        "price_band_lower": float(r.get("price_band", {}).get("lower_limit", 0) or 0),
         "spot_price": float(r.get("spot_price", 0) or 0),
     }
 
 
 def fetch_delta_orderbook(depth=20):
-    """Fetch L2 orderbook."""
     url = f"{config.DELTA_BASE_URL}/v2/l2orderbook/{config.DELTA_SYMBOL}"
     data = _safe_request(url, source_name="Delta OB")
     if data is None or not data.get("success"):
@@ -124,7 +108,6 @@ def fetch_delta_orderbook(depth=20):
 
 
 def fetch_delta_recent_trades():
-    """Fetch and analyze recent trades (tape reading)."""
     url = f"{config.DELTA_BASE_URL}/v2/trades/{config.DELTA_SYMBOL}"
     data = _safe_request(url, source_name="Delta Trades")
     if data is None or not data.get("success"):
@@ -144,21 +127,17 @@ def fetch_delta_recent_trades():
         side = t.get("buyer_role", "").lower()
         size = float(t.get("size", 0))
         price = float(t.get("price", 0))
-
         if side == "taker":
             buy_count += 1
             buy_volume += size
         else:
             sell_count += 1
             sell_volume += size
-
         if size > avg_size * 2 and price > 0:
             large_trades.append({"price": price, "size": size, "side": "BUY" if side == "taker" else "SELL"})
 
     total_count = buy_count + sell_count
     total_volume = buy_volume + sell_volume
-
-    # Aggression score: -1 (all sells) to +1 (all buys)
     aggression = (buy_volume - sell_volume) / total_volume if total_volume > 0 else 0
 
     return {
@@ -174,30 +153,26 @@ def fetch_delta_recent_trades():
 
 
 # =============================================================================
-#  BINANCE — Spot + Futures Intelligence
+#  BINANCE
 # =============================================================================
 
 def fetch_binance_price():
-    """Fetch BTC spot price from Binance."""
     url = f"{config.BINANCE_BASE_URL}/api/v3/ticker/price"
     data = _safe_request(url, params={"symbol": config.BINANCE_SYMBOL}, source_name="Binance Price")
     return float(data.get("price", 0)) if data else None
 
 
 def fetch_binance_klines(interval="5m", limit=50):
-    """Fetch Binance klines."""
     url = f"{config.BINANCE_BASE_URL}/api/v3/klines"
     data = _safe_request(url, params={"symbol": config.BINANCE_SYMBOL, "interval": interval, "limit": limit},
                          source_name=f"Binance Klines {interval}")
     if not data or not isinstance(data, list):
         return None
-
     cols = ["time", "open", "high", "low", "close", "volume",
             "close_time", "quote_vol", "trades", "taker_buy_base", "taker_buy_quote", "ignore"]
     valid_rows = [r for r in data if isinstance(r, list) and len(r) >= 6]
     if not valid_rows:
         return None
-
     df = pd.DataFrame(valid_rows, columns=cols[:len(valid_rows[0])])
     for col in ["open", "high", "low", "close", "volume"]:
         if col in df.columns:
@@ -206,7 +181,6 @@ def fetch_binance_klines(interval="5m", limit=50):
 
 
 def fetch_binance_long_short_ratio(period="5m", limit=5):
-    """Global long/short account ratio."""
     url = f"{config.BINANCE_FUTURES_URL}/futures/data/globalLongShortAccountRatio"
     data = _safe_request(url, params={"symbol": config.BINANCE_SYMBOL, "period": period, "limit": limit},
                          source_name="Binance L/S")
@@ -221,7 +195,6 @@ def fetch_binance_long_short_ratio(period="5m", limit=5):
 
 
 def fetch_binance_top_trader_positions(period="5m", limit=5):
-    """Top trader position ratio (whale sentiment)."""
     url = f"{config.BINANCE_FUTURES_URL}/futures/data/topLongShortPositionRatio"
     data = _safe_request(url, params={"symbol": config.BINANCE_SYMBOL, "period": period, "limit": limit},
                          source_name="Binance Top Traders")
@@ -236,7 +209,6 @@ def fetch_binance_top_trader_positions(period="5m", limit=5):
 
 
 def fetch_binance_taker_buy_sell(period="5m", limit=5):
-    """Taker buy/sell volume ratio (aggressive flow)."""
     url = f"{config.BINANCE_FUTURES_URL}/futures/data/takerlongshortRatio"
     data = _safe_request(url, params={"symbol": config.BINANCE_SYMBOL, "period": period, "limit": limit},
                          source_name="Binance Taker")
@@ -251,7 +223,6 @@ def fetch_binance_taker_buy_sell(period="5m", limit=5):
 
 
 def fetch_binance_open_interest():
-    """Current open interest."""
     url = f"{config.BINANCE_FUTURES_URL}/fapi/v1/openInterest"
     data = _safe_request(url, params={"symbol": config.BINANCE_SYMBOL}, source_name="Binance OI")
     if data is None:
@@ -260,39 +231,24 @@ def fetch_binance_open_interest():
 
 
 def fetch_binance_funding_rate_history(limit=10):
-    """Fetch recent funding rate history — trend matters more than single value."""
     url = f"{config.BINANCE_FUTURES_URL}/fapi/v1/fundingRate"
     data = _safe_request(url, params={"symbol": config.BINANCE_SYMBOL, "limit": limit},
                          source_name="Binance Funding History")
     if not data or not isinstance(data, list):
         return None
-
     rates = [float(r.get("fundingRate", 0)) for r in data]
     avg_rate = sum(rates) / len(rates) if rates else 0
-
-    # Trend: are funding rates increasing or decreasing?
+    trend = "unknown"
     if len(rates) >= 3:
         recent = sum(rates[:3]) / 3
         older = sum(rates[-3:]) / 3
-        if recent > older * 1.5:
-            trend = "increasing_positive"
-        elif recent < older * 0.5 or (recent < 0 and older > 0):
-            trend = "turning_negative"
-        else:
-            trend = "stable"
-    else:
-        trend = "unknown"
-
-    return {
-        "current_rate": rates[0] if rates else 0,
-        "avg_rate": round(avg_rate, 6),
-        "rates": rates,
-        "trend": trend,
-    }
+        if recent > older * 1.5: trend = "increasing_positive"
+        elif recent < older * 0.5 or (recent < 0 and older > 0): trend = "turning_negative"
+        else: trend = "stable"
+    return {"current_rate": rates[0] if rates else 0, "avg_rate": round(avg_rate, 6), "rates": rates, "trend": trend}
 
 
 def fetch_binance_futures_data():
-    """Fetch ALL Binance futures intelligence (cached 3 min)."""
     global _binance_futures_cache
     now = time.time()
     if (_binance_futures_cache["data"] is not None and
@@ -300,7 +256,6 @@ def fetch_binance_futures_data():
         return _binance_futures_cache["data"]
 
     result = {}
-    # Parallel fetch
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {
             executor.submit(fetch_binance_long_short_ratio): "long_short_ratio",
@@ -321,26 +276,22 @@ def fetch_binance_futures_data():
 
 
 # =============================================================================
-#  FEAR & GREED INDEX (7-day trend)
+#  FEAR & GREED
 # =============================================================================
 
 def fetch_fear_greed_index():
-    """Fetch Fear & Greed Index with 7-day trend."""
     global _fear_greed_cache
     now = time.time()
     if (_fear_greed_cache["data"] is not None and
-            (now - _fear_greed_cache["timestamp"]) < FEAR_GREED_CACHE_SECONDS):
+            (now - _fear_greed_cache["timestamp"]) < config.FEAR_GREED_CACHE_SECONDS):
         return _fear_greed_cache["data"]
 
     data = _safe_request(config.FEAR_GREED_URL, source_name="Fear & Greed")
     if data is None or "data" not in data:
-        # Return stale cache but flag it so Claude knows the data is not fresh
         stale = _fear_greed_cache.get("data")
         if stale is not None:
-            stale = dict(stale)  # don't mutate the cached dict
+            stale = dict(stale)
             stale["stale"] = True
-            stale_age_min = int((now - _fear_greed_cache["timestamp"]) / 60)
-            stale["stale_age_minutes"] = stale_age_min
         return stale
 
     entries = data["data"]
@@ -349,31 +300,25 @@ def fetch_fear_greed_index():
 
     current = entries[0]
     values = [int(e.get("value", 50)) for e in entries]
-
-    # 7-day trend
     trend = "stable"
     if len(values) >= 3:
-        if values[0] > values[-1] + 10:
-            trend = "improving"
-        elif values[0] < values[-1] - 10:
-            trend = "worsening"
+        if values[0] > values[-1] + 10: trend = "improving"
+        elif values[0] < values[-1] - 10: trend = "worsening"
 
     result = {
         "value": int(current.get("value", 50)),
         "classification": current.get("value_classification", "Neutral"),
-        "trend": trend,
-        "values_7d": values,
+        "trend": trend, "values_7d": values,
     }
     _fear_greed_cache = {"data": result, "timestamp": now}
     return result
 
 
 # =============================================================================
-#  COINGECKO (cached 10 min)
+#  COINGECKO
 # =============================================================================
 
 def fetch_coingecko_global():
-    """Fetch global crypto market data."""
     global _coingecko_cache
     now = time.time()
     if (_coingecko_cache["data"] is not None and
@@ -396,15 +341,13 @@ def fetch_coingecko_global():
 
 
 # =============================================================================
-#  AGGREGATE FETCHER — parallel where possible
+#  AGGREGATE FETCHER
 # =============================================================================
 
 def fetch_all_data():
-    """Master fetch — gets everything from all sources with parallel I/O."""
     results = {}
 
-    # Sequential Delta calls (same API, respect rate limits)
-    print("  📡 Fetching Delta Exchange data...")
+    # Delta candles (sequential for same API)
     results["delta_candles_5m"] = fetch_delta_candles(resolution="5m", count=config.CANDLES_5M_COUNT)
     results["delta_candles_15m"] = fetch_delta_candles(resolution="15m", count=config.CANDLES_15M_COUNT)
     results["delta_candles_1h"] = fetch_delta_candles(resolution="1h", count=config.CANDLES_1H_COUNT)
@@ -414,7 +357,6 @@ def fetch_all_data():
     results["delta_trades"] = fetch_delta_recent_trades()
 
     # Parallel external calls
-    print("  📡 Fetching external data...")
     with ThreadPoolExecutor(max_workers=4) as executor:
         ext_futures = {
             executor.submit(fetch_binance_price): "binance_price",
@@ -432,5 +374,5 @@ def fetch_all_data():
                 results[key] = None
 
     available = sum(1 for v in results.values() if v is not None)
-    print(f"  ✓ {available}/{len(results)} sources available")
+    print(f"  ✓ {available}/{len(results)} data sources OK")
     return results

@@ -1,0 +1,19 @@
+{
+  "last_claude_call": 1774645953.6608572,
+  "consecutive_losses": 0,
+  "loss_cooldown_until": 0,
+  "daily_stats": {
+    "date": "2026-03-28",
+    "total_pnl_usd": 0,
+    "trades_count": 0,
+    "wins": 0,
+    "losses": 0,
+    "breakevens": 0,
+    "starting_balance_usd": 870.0
+  },
+  "last_trade_direction": null,
+  "last_trade_was_loss": false,
+  "total_claude_calls_today": 21,
+  "total_claude_calls_date": "2026-03-28",
+  "last_heartbeat": 1774644211.6807911
+}

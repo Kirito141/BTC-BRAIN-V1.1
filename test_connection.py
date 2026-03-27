@@ -1,42 +1,34 @@
 """
 =============================================================================
- TEST_CONNECTION.PY — Pre-flight Check for BTC BRAIN v2
+ TEST_CONNECTION.PY — Pre-flight Check for BTC BRAIN v3
 =============================================================================
 """
 
 import sys
-import time
+import os
+
 
 def check_mark(ok):
     return "✅" if ok else "❌"
 
 
 def test_dependencies():
-    print("\n📦 CHECKING DEPENDENCIES...")
+    print("\n📦 DEPENDENCIES...")
     all_ok = True
-    for pkg in ["requests", "pandas", "numpy", "dotenv"]:
+    for pkg in ["requests", "pandas", "numpy", "dotenv", "rich"]:
         try:
             __import__("dotenv" if pkg == "dotenv" else pkg)
             print(f"  {check_mark(True)} {pkg}")
         except ImportError:
-            print(f"  {check_mark(False)} {pkg} — pip install {pkg}")
+            print(f"  {check_mark(False)} {pkg}")
             all_ok = False
-
-    # Bot uses requests-based API calls (no anthropic SDK required)
-    # but check if anthropic SDK is installed anyway (optional)
-    try:
-        import anthropic  # noqa: F401
-        print(f"  {check_mark(True)} anthropic (SDK installed — optional)")
-    except ImportError:
-        print(f"  ⚠️  anthropic SDK not installed (bot uses direct API via requests — OK)")
     return all_ok
 
 
 def test_env():
-    print("\n🔐 CHECKING ENVIRONMENT...")
-    import os
+    print("\n🔐 ENVIRONMENT...")
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(override=True)
 
     env_exists = os.path.exists(".env")
     print(f"  {check_mark(env_exists)} .env file")
@@ -45,23 +37,21 @@ def test_env():
         return False
 
     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
-    has_anthropic = anthropic_key and anthropic_key != "your_anthropic_api_key_here"
-    print(f"  {check_mark(has_anthropic)} ANTHROPIC_API_KEY {'set' if has_anthropic else 'NOT SET (required)'}")
+    has_anthropic = anthropic_key and "your_" not in anthropic_key
+    print(f"  {check_mark(has_anthropic)} ANTHROPIC_API_KEY")
 
     delta_key = os.getenv("DELTA_API_KEY", "")
-    has_delta = delta_key and delta_key != "your_delta_api_key_here"
-    print(f"  {'✅' if has_delta else '⚠️ '} DELTA_API_KEY {'set' if has_delta else 'not set (optional for signals)'}")
+    has_delta = delta_key and "your_" not in delta_key
+    print(f"  {'✅' if has_delta else '⚠️ '} DELTA_API_KEY {'set' if has_delta else '(optional for paper mode)'}")
 
-    tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    tg_chat = os.getenv("TELEGRAM_CHAT_ID", "")
-    tg_ready = tg_token and tg_chat and "your_" not in tg_token
-    print(f"  {'✅' if tg_ready else '⚠️ '} Telegram {'configured' if tg_ready else 'not configured'}")
+    mode = os.getenv("TRADING_MODE", "paper")
+    print(f"  ℹ️  TRADING_MODE = {mode}")
 
     return has_anthropic
 
 
 def test_delta():
-    print("\n🏦 TESTING DELTA EXCHANGE...")
+    print("\n🏦 DELTA EXCHANGE...")
     import requests
     try:
         r = requests.get("https://api.india.delta.exchange/v2/tickers/BTCUSD", timeout=10)
@@ -70,17 +60,42 @@ def test_delta():
             price = float(data["result"].get("mark_price", 0))
             print(f"  {check_mark(True)} Ticker OK — BTC: ${price:,.2f}")
             return True
-        print(f"  {check_mark(False)} Ticker returned success=false")
     except Exception as e:
         print(f"  {check_mark(False)} Failed: {e}")
     return False
 
 
+def test_delta_auth():
+    print("\n🔑 DELTA AUTH...")
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
+    import config
+    if not config.DELTA_API_KEY or "your_" in config.DELTA_API_KEY:
+        print(f"  ⚠️  No API key — skipping auth test")
+        return True
+
+    try:
+        from delta_client import DeltaClient
+        client = DeltaClient()
+        balances = client.get_wallet_balances()
+        if balances:
+            btc = balances.get("BTC", {})
+            print(f"  {check_mark(True)} Auth OK — BTC balance: {btc.get('balance', 0):.8f}")
+            return True
+        else:
+            print(f"  {check_mark(False)} Auth failed — check API key/secret")
+            return False
+    except Exception as e:
+        print(f"  {check_mark(False)} Auth error: {e}")
+        return False
+
+
 def test_binance():
-    print("\n🅱️ TESTING BINANCE...")
+    print("\n🅱️  BINANCE...")
     import requests
     try:
-        r = requests.get("https://api.binance.com/api/v3/ticker/price", params={"symbol": "BTCUSDT"}, timeout=10)
+        r = requests.get("https://api.binance.com/api/v3/ticker/price",
+                         params={"symbol": "BTCUSDT"}, timeout=10)
         data = r.json()
         price = float(data.get("price", 0))
         print(f"  {check_mark(True)} Spot OK — BTC: ${price:,.2f}")
@@ -91,7 +106,7 @@ def test_binance():
 
 
 def test_indicators():
-    print("\n📐 TESTING INDICATORS...")
+    print("\n📐 INDICATORS...")
     try:
         import pandas as pd
         import numpy as np
@@ -108,7 +123,6 @@ def test_indicators():
             "volume": np.random.randint(100, 10000, n),
         })
 
-        # Test all new indicators
         tests = [
             ("EMA", lambda: indicators.calculate_ema(df["close"], 9)),
             ("RSI", lambda: indicators.calculate_rsi(df["close"], 14)),
@@ -126,27 +140,55 @@ def test_indicators():
             ("Candles", lambda: indicators.detect_candle_patterns(df)),
             ("Regime", lambda: indicators.detect_regime(df)),
             ("SL/TP", lambda: indicators.calculate_sl_tp(87000, "BUY", 300)),
-            ("Position", lambda: indicators.calculate_position_size(87000)),
+            ("Dynamic Sizing", lambda: indicators.calculate_dynamic_position_size(87000, 8, 500)),
         ]
 
         all_ok = True
         for name, fn in tests:
             try:
-                result = fn()
+                fn()
                 print(f"  {check_mark(True)} {name}")
             except Exception as e:
                 print(f"  {check_mark(False)} {name}: {e}")
                 all_ok = False
         return all_ok
     except Exception as e:
-        print(f"  {check_mark(False)} Failed: {e}")
+        print(f"  {check_mark(False)} Import failed: {e}")
+        return False
+
+
+def test_pre_filter():
+    print("\n🔍 PRE-FILTER...")
+    try:
+        from bot_state import BotState
+        import pre_filter
+
+        state = BotState()
+        mock_indicators = {
+            "ema9": 87100, "ema21": 87000,
+            "htf_15m_trend": "bullish", "htf_1h_trend": "bullish", "htf_4h_trend": "bullish",
+            "adx": 30, "adx_15m": 25, "adx_4h": 28,
+            "rsi_5m": 45, "rsi_1h": 50, "rsi_4h": 55,
+            "macd_crossover": "bullish", "macd_15m_crossover": None,
+            "macd_1h_crossover": None, "macd_4h_crossover": None,
+            "stoch_rsi_signal": None, "rsi_divergence": None, "rsi_divergence_1h": None,
+            "bb_squeeze": False, "bb_position": 0.6,
+            "volume_climax": False, "relative_volume": 1.2,
+            "candle_patterns": [], "ichimoku_tk_cross": None,
+        }
+
+        should_call, reason = pre_filter.should_call_claude(mock_indicators, state, False)
+        print(f"  {check_mark(True)} Pre-filter works: should_call={should_call} reason={reason}")
+        return True
+    except Exception as e:
+        print(f"  {check_mark(False)} Pre-filter error: {e}")
         return False
 
 
 def main():
-    print("\n" + "=" * 56)
-    print("  🔍 BTC BRAIN v2 — PRE-FLIGHT CHECK")
-    print("=" * 56)
+    print(f"\n{'='*56}")
+    print(f"  🔍 BTC BRAIN v3 — PRE-FLIGHT CHECK")
+    print(f"{'='*56}")
 
     results = {}
     results["deps"] = test_dependencies()
@@ -154,12 +196,14 @@ def main():
 
     if results["deps"]:
         results["delta"] = test_delta()
+        results["delta_auth"] = test_delta_auth()
         results["binance"] = test_binance()
         results["indicators"] = test_indicators()
+        results["pre_filter"] = test_pre_filter()
 
-    print("\n" + "=" * 56)
-    print("  📋 SUMMARY")
-    print("=" * 56)
+    print(f"\n{'='*56}")
+    print(f"  📋 SUMMARY")
+    print(f"{'='*56}")
     for name, ok in results.items():
         print(f"  {check_mark(ok)} {name:.<30} {'PASS' if ok else 'FAIL'}")
 
