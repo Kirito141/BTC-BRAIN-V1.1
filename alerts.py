@@ -13,16 +13,35 @@ import config
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
+def _md_to_html(text):
+    """Convert basic Markdown (*bold*, _italic_, `code`) to Telegram HTML.
+    Also strips any raw Markdown syntax that could break Telegram's parser.
+    Using HTML avoids silent failures when Claude's reasoning contains
+    special chars like underscores, asterisks, or dollar signs.
+    """
+    import re
+    # Bold: *text* → <b>text</b>
+    text = re.sub(r'\*(.+?)\*', r'<b>\1</b>', text)
+    # Italic: _text_ → <i>text</i>
+    text = re.sub(r'_(.+?)_', r'<i>\1</i>', text)
+    # Inline code: `text` → <code>text</code>
+    text = re.sub(r'`(.+?)`', r'<code>\1</code>', text)
+    return text
+
+
 def send_telegram_alert(message):
-    """Send message via Telegram bot."""
+    """Send message via Telegram bot using HTML parse_mode.
+    HTML is more robust than Markdown — special chars ($, _, *, etc.)
+    in Claude's reasoning won't silently drop the message.
+    """
     if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
         return
     try:
         url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
         requests.post(url, json={
             "chat_id": config.TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "Markdown",
+            "text": _md_to_html(message),
+            "parse_mode": "HTML",
         }, timeout=10)
     except Exception as e:
         print(f"  [WARN] Telegram failed: {e}")

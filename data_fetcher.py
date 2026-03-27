@@ -334,7 +334,14 @@ def fetch_fear_greed_index():
 
     data = _safe_request(config.FEAR_GREED_URL, source_name="Fear & Greed")
     if data is None or "data" not in data:
-        return _fear_greed_cache.get("data")
+        # Return stale cache but flag it so Claude knows the data is not fresh
+        stale = _fear_greed_cache.get("data")
+        if stale is not None:
+            stale = dict(stale)  # don't mutate the cached dict
+            stale["stale"] = True
+            stale_age_min = int((now - _fear_greed_cache["timestamp"]) / 60)
+            stale["stale_age_minutes"] = stale_age_min
+        return stale
 
     entries = data["data"]
     if not entries:

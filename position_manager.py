@@ -8,6 +8,7 @@
 
 import json
 import os
+import tempfile
 import time
 from datetime import datetime, timezone, timedelta
 import config
@@ -27,11 +28,18 @@ def _load_position():
 
 
 def _save_position(position):
+    """Atomic write: write to temp file then rename to prevent corruption on power loss."""
     try:
-        with open(POSITION_FILE, "w") as f:
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=".", suffix=".tmp")
+        with os.fdopen(tmp_fd, "w") as f:
             json.dump(position, f, indent=2)
+        os.replace(tmp_path, POSITION_FILE)
     except IOError as e:
         print(f"  [WARN] Save position failed: {e}")
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 
 
 def _clear_position():

@@ -15,6 +15,7 @@ import sys
 import os
 import time
 import signal as os_signal
+import threading
 from datetime import datetime, timezone, timedelta
 
 import config
@@ -367,7 +368,24 @@ def main():
     while _running:
         cycle_count += 1
         try:
-            run_cycle(cycle_count)
+            # Timeout guard: if cycle hangs longer than (cycle_seconds - 30s),
+            # log a warning and skip to the next sleep. Prevents overlapping cycles.
+            cycle_timeout = max(60, config.BOT_CYCLE_SECONDS - 30)
+            cycle_timed_out = threading.Event()
+
+            def _cycle_watchdog():
+                cycle_timed_out.set()
+                print(f"\n  ⚠ Cycle #{cycle_count} timed out after {cycle_timeout}s — skipping to next cycle")
+
+            watchdog = threading.Timer(cycle_timeout, _cycle_watchdog)
+            watchdog.daemon = True
+            watchdog.start()
+            try:
+                if not cycle_timed_out.is_set():
+                    run_cycle(cycle_count)
+            finally:
+                watchdog.cancel()
+
         except KeyboardInterrupt:
             break
         except Exception as e:

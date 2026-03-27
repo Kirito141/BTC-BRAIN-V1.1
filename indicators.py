@@ -80,7 +80,8 @@ def calculate_rsi(series, period=14):
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(50)
+    # fillna(100): all gains with no losses → RSI should be 100 (max bullish), not neutral 50
+    return rsi.fillna(100)
 
 
 def detect_rsi_signal(df, period=None):
@@ -212,14 +213,9 @@ def calculate_obv(df):
     close = df["close"]
     volume = df["volume"]
 
-    obv = pd.Series(0.0, index=df.index)
-    for i in range(1, len(df)):
-        if close.iloc[i] > close.iloc[i-1]:
-            obv.iloc[i] = obv.iloc[i-1] + volume.iloc[i]
-        elif close.iloc[i] < close.iloc[i-1]:
-            obv.iloc[i] = obv.iloc[i-1] - volume.iloc[i]
-        else:
-            obv.iloc[i] = obv.iloc[i-1]
+    # Vectorized OBV — O(n) numpy instead of slow iloc-based loop
+    direction = np.sign(close.diff()).fillna(0)
+    obv = (direction * volume).cumsum()
 
     obv_ema = obv.ewm(span=20, adjust=False).mean()
 

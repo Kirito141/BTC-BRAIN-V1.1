@@ -14,19 +14,21 @@ def check_mark(ok):
 def test_dependencies():
     print("\n📦 CHECKING DEPENDENCIES...")
     all_ok = True
-    for pkg in ["requests", "pandas", "numpy", "dotenv", "anthropic"]:
+    for pkg in ["requests", "pandas", "numpy", "dotenv"]:
         try:
-            if pkg == "dotenv":
-                __import__("dotenv")
-            elif pkg == "anthropic":
-                # Just check requests works for API
-                __import__("requests")
-            else:
-                __import__(pkg)
+            __import__("dotenv" if pkg == "dotenv" else pkg)
             print(f"  {check_mark(True)} {pkg}")
         except ImportError:
             print(f"  {check_mark(False)} {pkg} — pip install {pkg}")
             all_ok = False
+
+    # Bot uses requests-based API calls (no anthropic SDK required)
+    # but check if anthropic SDK is installed anyway (optional)
+    try:
+        import anthropic  # noqa: F401
+        print(f"  {check_mark(True)} anthropic (SDK installed — optional)")
+    except ImportError:
+        print(f"  ⚠️  anthropic SDK not installed (bot uses direct API via requests — OK)")
     return all_ok
 
 

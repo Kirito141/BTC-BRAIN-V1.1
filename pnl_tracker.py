@@ -20,19 +20,34 @@ GST_PCT = 18.0           # 18% GST on fees
 
 
 def calculate_trade_pnl(direction, entry_price, exit_price, contracts, leverage):
-    """Calculate detailed P&L for a closed trade including Delta Exchange fees."""
-    notional = contracts * entry_price if entry_price > 0 else 0
-    margin = notional / leverage if leverage > 0 else 0
+    """Calculate detailed P&L for a closed trade including Delta Exchange fees.
 
-    if direction == "LONG":
-        gross_pnl_pct = (exit_price - entry_price) / entry_price * 100
+    Uses inverse perpetual formula: 1 contract = $1 USD of BTC.
+    Margin is denominated in BTC. PnL formula accounts for inverse convexity.
+    """
+    if entry_price <= 0 or exit_price <= 0:
+        notional = 0
+        margin = 0
+        gross_pnl_pct = 0
+        gross_pnl_usd = 0
     else:
-        gross_pnl_pct = (entry_price - exit_price) / entry_price * 100
+        # Inverse perp: notional is contracts (USD face value), margin is in BTC
+        notional = contracts  # 1 contract = $1 USD
+        margin_btc = contracts / (entry_price * leverage) if leverage > 0 else 0
+        margin = margin_btc * entry_price  # margin in USD at entry price
 
-    gross_pnl_usd = notional * (gross_pnl_pct / 100)
+        if direction == "LONG":
+            # PnL_USD = contracts * (1/entry - 1/exit) * entry * exit
+            #         = contracts * (exit - entry)  [simplifies for USD output]
+            gross_pnl_usd = contracts * (1 / entry_price - 1 / exit_price) * entry_price * exit_price
+            gross_pnl_pct = (exit_price - entry_price) / entry_price * 100
+        else:
+            gross_pnl_usd = contracts * (1 / exit_price - 1 / entry_price) * entry_price * exit_price
+            gross_pnl_pct = (entry_price - exit_price) / entry_price * 100
 
-    # Fees (both sides)
-    trading_fee = notional * (TRADING_FEE_PCT / 100) * 2
+    # Fees (both sides) — fee notional is contracts (USD face value) for inverse perp
+    fee_notional = contracts  # USD face value
+    trading_fee = fee_notional * (TRADING_FEE_PCT / 100) * 2
     gst = trading_fee * (GST_PCT / 100)
     total_fee = trading_fee + gst
 

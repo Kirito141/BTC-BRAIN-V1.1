@@ -51,20 +51,44 @@ def _call_claude_api(prompt, system_prompt):
         "messages": [{"role": "user", "content": prompt}],
     }
 
-    try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=90)
-        if resp.status_code == 200:
-            data = resp.json()
-            return "".join(b["text"] for b in data.get("content", []) if b.get("type") == "text")
-        else:
-            print(f"  [ERROR] Claude API {resp.status_code}: {resp.text[:300]}")
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=90)
+            if resp.status_code == 200:
+                data = resp.json()
+                return "".join(b["text"] for b in data.get("content", []) if b.get("type") == "text")
+            elif resp.status_code == 429:
+                # Rate limited — exponential backoff: 10s, 20s, 40s
+                wait = 10 * (2 ** (attempt - 1))
+                print(f"  [WARN] Claude API rate limited (429) — retrying in {wait}s (attempt {attempt}/{max_retries})")
+                if attempt < max_retries:
+                    time.sleep(wait)
+                    continue
+                else:
+                    print("  [ERROR] Claude API rate limit: max retries exceeded")
+                    return None
+            elif resp.status_code in (500, 502, 503, 529):
+                # Transient server error — short backoff
+                wait = 5 * attempt
+                print(f"  [WARN] Claude API server error {resp.status_code} — retrying in {wait}s (attempt {attempt}/{max_retries})")
+                if attempt < max_retries:
+                    time.sleep(wait)
+                    continue
+                return None
+            else:
+                print(f"  [ERROR] Claude API {resp.status_code}: {resp.text[:300]}")
+                return None
+        except requests.exceptions.Timeout:
+            print(f"  [ERROR] Claude API timed out (90s) — attempt {attempt}/{max_retries}")
+            if attempt < max_retries:
+                time.sleep(5)
+                continue
             return None
-    except requests.exceptions.Timeout:
-        print("  [ERROR] Claude API timed out (90s)")
-        return None
-    except Exception as e:
-        print(f"  [ERROR] Claude API: {e}")
-        return None
+        except Exception as e:
+            print(f"  [ERROR] Claude API: {e}")
+            return None
+    return None
 
 
 def _build_system_prompt(current_position=None):
