@@ -8,6 +8,7 @@
    • Adaptive scan cycles (60s indicator checks, Claude only when needed)
    • Pre-filter gate saves 60-80% on Claude API costs
    • Auto-executes trades on Delta Exchange (or paper mode)
+   • BRACKET ORDERS: SL + TP placed on exchange (not just local)
    • Auto-trailing stops, SL/TP management
    • Daily drawdown limits, consecutive loss protection
    • Full P&L tracking, Telegram heartbeats
@@ -79,12 +80,8 @@ class TradingBot:
             else:
                 print(f"  ⚠️  Could not fetch balance (paper mode or API issue)")
 
-        # Check for existing position
-        pos = position_manager.get_current_position()
-        if pos:
-            print(f"  📍 RESUMING: {pos['direction']} @ ${pos['entry_price']:,.2f}")
-        else:
-            print(f"  📍 Starting FLAT")
+        # Check for existing position — sync with Delta Exchange
+        self._sync_position_with_exchange()
 
         # Send startup alert
         alerts.send_telegram_alert(
@@ -93,6 +90,66 @@ class TradingBot:
             f"BTC: `${self.last_price:,.2f}`"
         )
         print()
+
+    def _sync_position_with_exchange(self):
+        """Sync local position state with what Delta Exchange actually shows."""
+        local_pos = position_manager.get_current_position()
+        
+        if config.TRADING_MODE == "paper":
+            if local_pos:
+                print(f"  📍 RESUMING: {local_pos['direction']} @ ${local_pos['entry_price']:,.2f}")
+            else:
+                print(f"  📍 Starting FLAT")
+            return
+        
+        # In LIVE mode: check what Delta actually has
+        exchange_pos = self.delta.get_position_for_product()
+        
+        if exchange_pos and abs(exchange_pos.get("size", 0)) > 0:
+            print(f"  📍 EXCHANGE POSITION: {exchange_pos['direction']} "
+                  f"size={abs(exchange_pos['size'])} @ ${exchange_pos['entry_price']:,.2f}")
+            if local_pos:
+                print(f"  📍 Local matches — resuming")
+            else:
+                print(f"  ⚠️  EXCHANGE HAS POSITION but local state is FLAT!")
+                print(f"  ⚠️  Recording exchange position locally")
+                position_manager.open_position(
+                    exchange_pos['direction'], exchange_pos['entry_price'],
+                    0, 0, 0, "recovered_from_exchange",
+                    contracts=abs(exchange_pos['size'])
+                )
+        else:
+            if local_pos:
+                print(f"  ⚠️  Local shows position but EXCHANGE IS FLAT — clearing local state")
+                position_manager._clear_position()
+            print(f"  📍 Starting FLAT")
+
+    def _print_banner(self):
+        mode = "🔴 LIVE" if config.TRADING_MODE == "live" else "📝 PAPER"
+        print(f"\n{'='*60}")
+        print(f"  ⚡ BTC BRAIN v3 Ultra — Full Auto-Trading Bot")
+        print(f"  Mode: {mode} | Model: {config.CLAUDE_MODEL}")
+        print(f"  Leverage: {config.LEVERAGE}x | Min Conf: {config.MIN_CONFIDENCE}")
+        print(f"  Scan: {config.BASE_SCAN_INTERVAL}s | Claude Min: {config.MIN_CLAUDE_INTERVAL}s")
+        print(f"  Daily Drawdown Limit: {config.DAILY_MAX_DRAWDOWN_PCT}%")
+        print(f"  Max Consecutive Losses: {config.MAX_CONSECUTIVE_LOSSES}")
+        print(f"{'='*60}")
+
+    def _shutdown(self):
+        print("\n  📊 Final Summary:")
+        stats = self.state.get_daily_stats()
+        if stats["trades_count"] > 0:
+            print(f"  P&L: ${stats['total_pnl_usd']:+,.4f} | "
+                  f"Trades: {stats['trades_count']} | W:{stats['wins']} L:{stats['losses']}")
+        print(f"  Claude calls today: {self.state.claude_calls_today()}")
+
+        summary = (
+            f"📊 *BTC BRAIN v3 — Shutdown*\n"
+            f"P&L: `${stats['total_pnl_usd']:+,.4f}`\n"
+            f"Trades: {stats['trades_count']} | Claude calls: {self.state.claude_calls_today()}"
+        )
+        alerts.send_telegram_alert(summary)
+        print("  👋 Goodbye!\n")
 
     # ─── Main Loop ──────────────────────────────────────────────────────
 
@@ -164,14 +221,14 @@ class TradingBot:
         # ── In Position: Check SL/TP/Expiry + Auto-Trail ────────────────
         pos = position_manager.get_current_position()
         if pos:
-            # Check SL/TP hit
+            # Check SL/TP hit (software backup — exchange SL/TP should handle this)
             hit = position_manager.check_sl_tp_hit(price)
             if hit == "sl_hit":
-                print(f"\n  ⚠️  STOP-LOSS HIT!")
+                print(f"\n  ⚠️  STOP-LOSS HIT! (software check)")
                 self._close_trade(price, "sl_hit")
                 return
             elif hit == "tp_hit":
-                print(f"\n  🎯 TAKE-PROFIT HIT!")
+                print(f"\n  🎯 TAKE-PROFIT HIT! (software check)")
                 self._close_trade(price, "tp_hit")
                 return
 
@@ -180,6 +237,15 @@ class TradingBot:
                 print(f"\n  ⏰ Trade expired ({config.MAX_TRADE_DURATION_MINUTES}min)")
                 self._close_trade(price, "expired")
                 return
+
+            # Verify position still exists on exchange (live mode)
+            if config.TRADING_MODE == "live":
+                exchange_pos = self.delta.get_position_for_product()
+                if exchange_pos is None or abs(exchange_pos.get("size", 0)) == 0:
+                    print(f"\n  ⚠️  Position closed on exchange (SL/TP hit on exchange)")
+                    # Position was closed by exchange SL/TP order
+                    self._handle_exchange_closed_position(pos, price)
+                    return
 
             # Auto-trail stop loss
             self._auto_trail_stop(pos, price)
@@ -229,6 +295,68 @@ class TradingBot:
         # ── IN POSITION: Handle management decisions ────────────────────
         else:
             self._handle_in_position(analysis, pos, price)
+
+    # ─── Handle Exchange-Closed Position ────────────────────────────────
+
+    def _handle_exchange_closed_position(self, local_pos, current_price):
+        """Handle when exchange closed the position (SL/TP hit on exchange side)."""
+        direction = local_pos["direction"]
+        entry = local_pos["entry_price"]
+        sl = local_pos.get("stop_loss", 0)
+        tp = local_pos.get("take_profit", 0)
+        contracts = local_pos.get("contracts", 1)
+
+        # Determine likely exit price based on which was closer
+        if direction == "LONG":
+            sl_dist = abs(current_price - sl) if sl > 0 else float('inf')
+            tp_dist = abs(current_price - tp) if tp > 0 else float('inf')
+        else:
+            sl_dist = abs(current_price - sl) if sl > 0 else float('inf')
+            tp_dist = abs(current_price - tp) if tp > 0 else float('inf')
+
+        if tp_dist < sl_dist:
+            exit_price = tp
+            reason = "tp_hit_exchange"
+            print(f"  🎯 Take-profit hit on exchange! TP=${tp:,.2f}")
+        else:
+            exit_price = sl
+            reason = "sl_hit_exchange"
+            print(f"  ⚠️  Stop-loss hit on exchange! SL=${sl:,.2f}")
+
+        if exit_price <= 0:
+            exit_price = current_price
+
+        # Record locally
+        closed = position_manager.close_position(reason, exit_price)
+        if not closed:
+            position_manager._clear_position()
+            return
+
+        # Calculate and record P&L
+        pnl = pnl_tracker.calculate_trade_pnl(
+            direction=closed["direction"],
+            entry_price=closed["entry_price"],
+            exit_price=exit_price,
+            contracts=contracts,
+            leverage=config.LEVERAGE,
+        )
+
+        pnl_tracker.log_closed_trade(pnl, close_reason=reason)
+        self.state.update_daily_pnl(pnl["net_pnl_usd"])
+
+        if pnl["result"] == "WIN":
+            self.state.record_win()
+            self.state.mark_last_signal_outcome(closed["direction"], "win")
+        elif pnl["result"] == "LOSS":
+            self.state.record_loss(closed["direction"])
+            self.state.mark_last_signal_outcome(closed["direction"], "loss")
+        else:
+            self.state.record_breakeven()
+            self.state.mark_last_signal_outcome(closed["direction"], "breakeven")
+
+        terminal_report, telegram_report = pnl_tracker.format_trade_report(pnl, reason)
+        print(terminal_report)
+        alerts.send_telegram_alert(telegram_report)
 
     # ─── FLAT State Handler ─────────────────────────────────────────────
 
@@ -280,17 +408,47 @@ class TradingBot:
         print(f"  📊 Size: {contracts} contracts ({sizing['usage_pct']}% of ${available_usd:,.0f})")
         print(f"  Entry: ${entry:,.2f} | SL: ${sl:,.2f} | TP: ${tp:,.2f}")
 
-        # Place order on Delta Exchange
+        # ═══ CRITICAL FIX: Use bracket order (SL + TP on exchange) ═══
         side = "buy" if action == "BUY" else "sell"
-        order_result = self.delta.place_market_order(side, contracts)
 
-        if order_result is None:
-            print(f"  ❌ Order failed!")
-            trade_tracker.log_signal(analysis, trade_taken=False, skip_reason="order_failed")
-            return
+        if config.TRADING_MODE == "live" and sl > 0 and tp > 0:
+            # LIVE MODE: Place bracket order with SL + TP on Delta Exchange
+            print(f"  🔒 Placing BRACKET order (SL+TP on exchange)...")
+            bracket_result = self.delta.place_bracket_order(side, contracts, sl, tp)
 
-        actual_entry = order_result.get("avg_fill_price") or entry
-        order_id = order_result.get("order_id", "")
+            if bracket_result is None:
+                print(f"  ❌ Bracket order failed!")
+                trade_tracker.log_signal(analysis, trade_taken=False, skip_reason="order_failed")
+                return
+
+            actual_entry = bracket_result.get("entry_price") or entry
+            order_id = bracket_result.get("entry", {}).get("order_id", "")
+
+            # Log SL/TP order status
+            sl_order = bracket_result.get("stop_loss_order")
+            tp_order = bracket_result.get("take_profit_order")
+            if sl_order:
+                print(f"  ✅ SL order placed: ${sl:,.2f} (ID: {sl_order.get('order_id', '?')})")
+            else:
+                print(f"  ⚠️  SL order FAILED — falling back to software SL")
+                alerts.send_telegram_alert(f"⚠️ *WARNING*: SL order failed to place on exchange! Software SL active.")
+
+            if tp_order:
+                print(f"  ✅ TP order placed: ${tp:,.2f} (ID: {tp_order.get('order_id', '?')})")
+            else:
+                print(f"  ⚠️  TP order FAILED — falling back to software TP")
+                alerts.send_telegram_alert(f"⚠️ *WARNING*: TP order failed to place on exchange! Software TP active.")
+        else:
+            # PAPER MODE or no SL/TP: Plain market order
+            order_result = self.delta.place_market_order(side, contracts)
+
+            if order_result is None:
+                print(f"  ❌ Order failed!")
+                trade_tracker.log_signal(analysis, trade_taken=False, skip_reason="order_failed")
+                return
+
+            actual_entry = order_result.get("avg_fill_price") or entry
+            order_id = order_result.get("order_id", "")
 
         # Record position locally
         position_manager.open_position(
@@ -306,6 +464,7 @@ class TradingBot:
             f"⚡ *{action}* (conf:{confidence}/10)\n"
             f"Entry: `${actual_entry:,.2f}` | SL: `${sl:,.2f}` | TP: `${tp:,.2f}`\n"
             f"Size: {contracts} contracts\n"
+            f"SL/TP: {'✅ ON EXCHANGE' if config.TRADING_MODE == 'live' else '📝 Software only'}\n"
             f"_{reasoning[:200]}_"
         )
 
@@ -326,43 +485,49 @@ class TradingBot:
                 action = "HOLD"
         if action == "NO_TRADE":
             action = "HOLD"
-        if action not in ["HOLD", "TRAIL_SL", "ADJUST_TP", "EXIT", "REVERSE"]:
-            action = "HOLD"
+
+        print(f"  🔄 {action} (conf:{confidence}) — {reasoning[:100]}")
 
         if action == "HOLD":
-            print(f"  ✊ HOLD (conf:{confidence}) — {reasoning[:80]}")
+            pass
 
         elif action == "TRAIL_SL":
-            new_sl = analysis.get("new_sl", 0)
-            if new_sl > 0:
+            new_sl = analysis.get("stop_loss")
+            if new_sl:
                 old_sl = pos["stop_loss"]
-                valid = ((pos["direction"] == "LONG" and new_sl > old_sl) or
-                         (pos["direction"] == "SHORT" and new_sl < old_sl))
-                if valid:
+                # Only trail in the right direction
+                if pos["direction"] == "LONG" and new_sl > old_sl:
                     position_manager.update_stop_loss(new_sl)
-                    print(f"  📐 SL trailed: ${old_sl:,.2f} → ${new_sl:,.2f}")
-                    alerts.send_telegram_alert(f"📐 SL → ${new_sl:,.2f}")
+                    # Update SL on exchange too
+                    if config.TRADING_MODE == "live":
+                        self._update_exchange_sl(pos, new_sl)
+                    alerts.send_telegram_alert(f"🔺 SL → ${new_sl:,.2f}")
+                    print(f"  🔺 SL trailed: ${old_sl:,.2f} → ${new_sl:,.2f}")
+                elif pos["direction"] == "SHORT" and new_sl < old_sl:
+                    position_manager.update_stop_loss(new_sl)
+                    if config.TRADING_MODE == "live":
+                        self._update_exchange_sl(pos, new_sl)
+                    alerts.send_telegram_alert(f"🔻 SL → ${new_sl:,.2f}")
+                    print(f"  🔻 SL trailed: ${old_sl:,.2f} → ${new_sl:,.2f}")
 
         elif action == "ADJUST_TP":
-            new_tp = analysis.get("new_tp", 0)
-            if new_tp > 0:
+            new_tp = analysis.get("take_profit")
+            if new_tp:
                 position_manager.update_take_profit(new_tp)
-                print(f"  📐 TP adjusted → ${new_tp:,.2f}")
+                if config.TRADING_MODE == "live":
+                    self._update_exchange_tp(pos, new_tp)
+                print(f"  🎯 TP adjusted → ${new_tp:,.2f}")
 
         elif action == "EXIT":
-            print(f"  🚪 EXIT — {reasoning[:100]}")
-            if confidence >= 5:
-                self._close_trade(price, "claude_exit")
-            else:
-                print(f"  ⏸ EXIT blocked (conf {confidence} < 5)")
+            print(f"  🚪 Claude says EXIT")
+            self._close_trade(price, "claude_exit")
 
         elif action == "REVERSE":
-            print(f"  🔄 REVERSE — {reasoning[:100]}")
             if confidence >= 7:
+                print(f"  🔄 REVERSING position...")
                 old_dir = pos["direction"]
-                self._close_trade(price, "reversed")
+                self._close_trade(price, "reverse")
 
-                # Open new position in opposite direction
                 new_dir = "SHORT" if old_dir == "LONG" else "LONG"
                 new_side = "sell" if new_dir == "SHORT" else "buy"
                 new_entry = analysis.get("entry_price") or price
@@ -375,21 +540,84 @@ class TradingBot:
                     new_entry, confidence, available_usd
                 )
 
-                order_result = self.delta.place_market_order(new_side, sizing["contracts"])
-                if order_result:
-                    actual_entry = order_result.get("avg_fill_price") or new_entry
-                    position_manager.open_position(
-                        new_dir, actual_entry, new_sl, new_tp, confidence, reasoning,
-                        contracts=sizing["contracts"],
-                        order_id=order_result.get("order_id", "")
-                    )
-                    alerts.send_telegram_alert(
-                        f"🔄 REVERSED → {new_dir} @ ${actual_entry:,.2f}"
-                    )
+                # Use bracket order for the new position too
+                if config.TRADING_MODE == "live" and new_sl > 0 and new_tp > 0:
+                    bracket_result = self.delta.place_bracket_order(new_side, sizing["contracts"], new_sl, new_tp)
+                    if bracket_result:
+                        actual_entry = bracket_result.get("entry_price") or new_entry
+                        position_manager.open_position(
+                            new_dir, actual_entry, new_sl, new_tp, confidence, reasoning,
+                            contracts=sizing["contracts"],
+                            order_id=bracket_result.get("entry", {}).get("order_id", "")
+                        )
+                        alerts.send_telegram_alert(
+                            f"🔄 REVERSED → {new_dir} @ ${actual_entry:,.2f}\n"
+                            f"SL: `${new_sl:,.2f}` TP: `${new_tp:,.2f}` (ON EXCHANGE)"
+                        )
+                else:
+                    order_result = self.delta.place_market_order(new_side, sizing["contracts"])
+                    if order_result:
+                        actual_entry = order_result.get("avg_fill_price") or new_entry
+                        position_manager.open_position(
+                            new_dir, actual_entry, new_sl, new_tp, confidence, reasoning,
+                            contracts=sizing["contracts"],
+                            order_id=order_result.get("order_id", "")
+                        )
+                        alerts.send_telegram_alert(
+                            f"🔄 REVERSED → {new_dir} @ ${actual_entry:,.2f}"
+                        )
             else:
                 print(f"  ⏸ REVERSE blocked (conf {confidence} < 7)")
 
         trade_tracker.log_signal(analysis, trade_taken=(action in ["EXIT", "REVERSE"]))
+
+    # ─── Update Exchange SL/TP ──────────────────────────────────────────
+
+    def _update_exchange_sl(self, pos, new_sl):
+        """Cancel existing stop orders and place new SL on exchange."""
+        try:
+            contracts = pos.get("contracts", 1)
+            sl_side = "sell" if pos["direction"] == "LONG" else "buy"
+            # Cancel all existing stop orders first
+            self.delta.cancel_all_orders()
+            # Place new SL
+            sl_result = self.delta._place_stop_order(
+                sl_side, contracts, new_sl, reduce_only=True, order_type="stop_loss"
+            )
+            # Re-place TP
+            tp = pos.get("take_profit", 0)
+            if tp > 0:
+                self.delta._place_stop_order(
+                    sl_side, contracts, tp, reduce_only=True, order_type="take_profit"
+                )
+            if sl_result:
+                print(f"  ✅ Exchange SL updated to ${new_sl:,.2f}")
+            else:
+                print(f"  ⚠️  Failed to update SL on exchange!")
+        except Exception as e:
+            print(f"  ⚠️  Exchange SL update error: {e}")
+
+    def _update_exchange_tp(self, pos, new_tp):
+        """Cancel existing TP orders and place new TP on exchange."""
+        try:
+            contracts = pos.get("contracts", 1)
+            tp_side = "sell" if pos["direction"] == "LONG" else "buy"
+            # Cancel all and re-place both
+            self.delta.cancel_all_orders()
+            # Re-place SL
+            sl = pos.get("stop_loss", 0)
+            if sl > 0:
+                self.delta._place_stop_order(
+                    tp_side, contracts, sl, reduce_only=True, order_type="stop_loss"
+                )
+            # Place new TP
+            tp_result = self.delta._place_stop_order(
+                tp_side, contracts, new_tp, reduce_only=True, order_type="take_profit"
+            )
+            if tp_result:
+                print(f"  ✅ Exchange TP updated to ${new_tp:,.2f}")
+        except Exception as e:
+            print(f"  ⚠️  Exchange TP update error: {e}")
 
     # ─── Close Trade ────────────────────────────────────────────────────
 
@@ -399,11 +627,44 @@ class TradingBot:
         if pos is None:
             return
 
-        # Close on Delta
-        close_result = self.delta.close_position()
+        # Close on Delta (with retry)
+        close_result = None
+        for attempt in range(3):
+            close_result = self.delta.close_position()
+            if close_result is not None:
+                break
+            print(f"  ⚠️  Close attempt {attempt+1}/3 failed, retrying...")
+            time.sleep(1)
+
         actual_exit = current_price
         if close_result and close_result.get("avg_fill_price"):
             actual_exit = close_result["avg_fill_price"]
+
+        # Verify position is actually closed on exchange (live mode)
+        if config.TRADING_MODE == "live":
+            time.sleep(1)  # Give exchange a moment
+            exchange_pos = self.delta.get_position_for_product()
+            if exchange_pos and abs(exchange_pos.get("size", 0)) > 0:
+                print(f"  🚨 CRITICAL: Position STILL OPEN on exchange after close!")
+                print(f"  🚨 Retrying with force close...")
+                alerts.send_telegram_alert(
+                    f"🚨 *CRITICAL*: Position still open after close attempt!\n"
+                    f"Retrying force close..."
+                )
+                # Force close retry
+                self.delta.cancel_all_orders()
+                time.sleep(0.5)
+                close_result = self.delta.close_position()
+                if close_result and close_result.get("avg_fill_price"):
+                    actual_exit = close_result["avg_fill_price"]
+                    print(f"  ✅ Force close succeeded")
+                else:
+                    print(f"  🚨🚨 FORCE CLOSE FAILED — MANUAL INTERVENTION NEEDED!")
+                    alerts.send_telegram_alert(
+                        f"🚨🚨 *CRITICAL*: Cannot close position!\n"
+                        f"Direction: {pos['direction']}\n"
+                        f"MANUAL CLOSE REQUIRED on Delta Exchange!"
+                    )
 
         # Record locally
         closed = position_manager.close_position(reason, actual_exit)
@@ -444,64 +705,50 @@ class TradingBot:
 
     def _auto_trail_stop(self, pos, current_price):
         entry = pos["entry_price"]
-        current_sl = pos["stop_loss"]
+        sl = pos["stop_loss"]
         direction = pos["direction"]
 
         if direction == "LONG":
             pnl_pct = (current_price - entry) / entry * 100
-            if pnl_pct >= config.TRAIL_TO_BREAKEVEN_PCT and current_sl < entry:
-                new_sl = entry + (entry * 0.01 / 100)
-                position_manager.update_stop_loss(round(new_sl, 2))
-                alerts.send_telegram_alert(f"📐 Auto-trail: SL → breakeven ${new_sl:,.2f}")
-                return
-            if pnl_pct > config.TRAIL_TO_BREAKEVEN_PCT * 2:
-                profit_lock = entry + (current_price - entry) * config.TRAIL_PROFIT_LOCK_RATIO
-                if profit_lock > current_sl:
-                    position_manager.update_stop_loss(round(profit_lock, 2))
-                    alerts.send_telegram_alert(f"📐 Trail: SL → ${profit_lock:,.2f}")
-                    return
         else:
             pnl_pct = (entry - current_price) / entry * 100
-            if pnl_pct >= config.TRAIL_TO_BREAKEVEN_PCT and current_sl > entry:
-                new_sl = entry - (entry * 0.01 / 100)
-                position_manager.update_stop_loss(round(new_sl, 2))
-                alerts.send_telegram_alert(f"📐 Auto-trail: SL → breakeven ${new_sl:,.2f}")
-                return
-            if pnl_pct > config.TRAIL_TO_BREAKEVEN_PCT * 2:
-                profit_lock = entry - (entry - current_price) * config.TRAIL_PROFIT_LOCK_RATIO
-                if profit_lock < current_sl:
-                    position_manager.update_stop_loss(round(profit_lock, 2))
-                    alerts.send_telegram_alert(f"📐 Trail: SL → ${profit_lock:,.2f}")
-                    return
 
-    # ─── UI ─────────────────────────────────────────────────────────────
+        # Trail to breakeven
+        if pnl_pct >= config.TRAIL_TO_BREAKEVEN_PCT:
+            if direction == "LONG" and sl < entry:
+                new_sl = entry + (entry * 0.0001)  # tiny buffer above entry
+                position_manager.update_stop_loss(new_sl)
+                if config.TRADING_MODE == "live":
+                    self._update_exchange_sl(pos, new_sl)
+                alerts.send_telegram_alert(f"🔒 SL → breakeven ${new_sl:,.2f}")
+                print(f"  🔒 SL trailed to breakeven: ${new_sl:,.2f}")
+            elif direction == "SHORT" and sl > entry:
+                new_sl = entry - (entry * 0.0001)
+                position_manager.update_stop_loss(new_sl)
+                if config.TRADING_MODE == "live":
+                    self._update_exchange_sl(pos, new_sl)
+                alerts.send_telegram_alert(f"🔒 SL → breakeven ${new_sl:,.2f}")
+                print(f"  🔒 SL trailed to breakeven: ${new_sl:,.2f}")
 
-    def _print_banner(self):
-        mode = "🔴 LIVE" if config.TRADING_MODE == "live" else "📝 PAPER"
-        print(f"\n{'='*60}")
-        print(f"  ⚡ BTC BRAIN v3 Ultra — Full Auto-Trading Bot")
-        print(f"  Mode: {mode} | Model: {config.CLAUDE_MODEL}")
-        print(f"  Leverage: {config.LEVERAGE}x | Min Conf: {config.MIN_CONFIDENCE}")
-        print(f"  Scan: {config.BASE_SCAN_INTERVAL}s | Claude Min: {config.MIN_CLAUDE_INTERVAL}s")
-        print(f"  Daily Drawdown Limit: {config.DAILY_MAX_DRAWDOWN_PCT}%")
-        print(f"  Max Consecutive Losses: {config.MAX_CONSECUTIVE_LOSSES}")
-        print(f"{'='*60}")
-
-    def _shutdown(self):
-        print("\n  📊 Final Summary:")
-        stats = self.state.get_daily_stats()
-        if stats["trades_count"] > 0:
-            print(f"  P&L: ${stats['total_pnl_usd']:+,.4f} | "
-                  f"Trades: {stats['trades_count']} | W:{stats['wins']} L:{stats['losses']}")
-        print(f"  Claude calls today: {self.state.claude_calls_today()}")
-
-        summary = (
-            f"📊 *BTC BRAIN v3 — Shutdown*\n"
-            f"P&L: `${stats['total_pnl_usd']:+,.4f}`\n"
-            f"Trades: {stats['trades_count']} | Claude calls: {self.state.claude_calls_today()}"
-        )
-        alerts.send_telegram_alert(summary)
-        print("  👋 Goodbye!\n")
+        # Lock profits
+        if pnl_pct > config.TRAIL_TO_BREAKEVEN_PCT:
+            lock_pct = pnl_pct * config.TRAIL_PROFIT_LOCK_RATIO
+            if direction == "LONG":
+                lock_sl = entry * (1 + lock_pct / 100)
+                if lock_sl > sl:
+                    position_manager.update_stop_loss(lock_sl)
+                    if config.TRADING_MODE == "live":
+                        self._update_exchange_sl(pos, lock_sl)
+                    alerts.send_telegram_alert(f"📈 SL → ${lock_sl:,.2f} (locking {lock_pct:.2f}%)")
+                    print(f"  📈 SL locked profits: ${lock_sl:,.2f}")
+            else:
+                lock_sl = entry * (1 - lock_pct / 100)
+                if lock_sl < sl:
+                    position_manager.update_stop_loss(lock_sl)
+                    if config.TRADING_MODE == "live":
+                        self._update_exchange_sl(pos, lock_sl)
+                    alerts.send_telegram_alert(f"📉 SL → ${lock_sl:,.2f} (locking {lock_pct:.2f}%)")
+                    print(f"  📉 SL locked profits: ${lock_sl:,.2f}")
 
 
 # =============================================================================
