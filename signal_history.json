@@ -1,115 +1,5 @@
 [
   {
-    "time": "02:13 AM IST",
-    "timestamp": 1774644236,
-    "decision": "NO_TRADE",
-    "confidence": 3,
-    "entry_price": 0.0,
-    "stop_loss": 0.0,
-    "take_profit": 0.0,
-    "reasoning": "Step 1 - 4H BIAS: 4H is bearish with ADX 27.91 (strong), MACD negative, DI bearish. Strong downtrend confirmed. Step 2 - TREND CONFIRM: 1H is strong_bearish, RSI 24.6, MACD negative, Ichimoku red belo",
-    "outcome": "pending"
-  },
-  {
-    "time": "02:14 AM IST",
-    "timestamp": 1774644289,
-    "decision": "NO_TRADE",
-    "confidence": 3,
-    "entry_price": 0.0,
-    "stop_loss": 0.0,
-    "take_profit": 0.0,
-    "reasoning": "Step 1 - 4H BIAS: Bearish trend with ADX 27.91 (strong), RSI 26.7, MACD negative, DI bearish. Strong downtrend confirmed. Step 2 - TREND CONFIRM: 1H strongly bearish (RSI 24.7, MACD negative, Ichimoku",
-    "outcome": "pending"
-  },
-  {
-    "time": "02:15 AM IST",
-    "timestamp": 1774644348,
-    "decision": "NO_TRADE",
-    "confidence": 3,
-    "entry_price": 0.0,
-    "stop_loss": 0.0,
-    "take_profit": 0.0,
-    "reasoning": "Step 1 - 4H BIAS: Bearish with ADX 27.91 (strong), RSI 26.6 oversold but MACD negative. Strong downtrend intact. Step 2 - TREND CONFIRM: 1H strong bearish, RSI 24.4 deeply oversold, Ichimoku red below",
-    "outcome": "pending"
-  },
-  {
-    "time": "02:16 AM IST",
-    "timestamp": 1774644410,
-    "decision": "NO_TRADE",
-    "confidence": 3,
-    "entry_price": 0.0,
-    "stop_loss": 0.0,
-    "take_profit": 0.0,
-    "reasoning": "1. 4H BIAS: Bearish with ADX 27.91 (strong), RSI 26.5, MACD negative, DI bearish. Strong downtrend in place. 2. TREND CONFIRM: 1H strongly bearish, RSI 24.2, Ichimoku red below cloud. 15M strong beari",
-    "outcome": "pending"
-  },
-  {
-    "time": "02:17 AM IST",
-    "timestamp": 1774644466,
-    "decision": "NO_TRADE",
-    "confidence": 3,
-    "entry_price": 0.0,
-    "stop_loss": 0.0,
-    "take_profit": 0.0,
-    "reasoning": "1. 4H BIAS: Bearish with ADX 27.91 (strong) and bearish DI alignment. RSI 26.5 oversold but trend still down - do not fight. 2. TREND CONFIRM: 1H strong bearish, RSI 24.3 (deeply oversold), Ichimoku r",
-    "outcome": "pending"
-  },
-  {
-    "time": "02:18 AM IST",
-    "timestamp": 1774644528,
-    "decision": "NO_TRADE",
-    "confidence": 3,
-    "entry_price": 0.0,
-    "stop_loss": 0.0,
-    "take_profit": 0.0,
-    "reasoning": "1. 4H BIAS: Bearish trend with ADX 27.91 (strong), MACD negative, DI bearish. Clear downtrend on 4H. 2. TREND CONFIRM: 1H strong_bearish RSI 24.5 (oversold), MACD negative, Ichimoku red below cloud. 1",
-    "outcome": "pending"
-  },
-  {
-    "time": "02:19 AM IST",
-    "timestamp": 1774644584,
-    "decision": "NO_TRADE",
-    "confidence": 3,
-    "entry_price": 0.0,
-    "stop_loss": 0.0,
-    "take_profit": 0.0,
-    "reasoning": "1. 4H BIAS: Bearish with ADX 27.91 (strong), RSI 26.6 oversold but MACD negative, DI bearish. Strong downtrend in force. 2. TREND CONFIRM: 1H strongly bearish, RSI 24.5 (deeply oversold), Ichimoku red",
-    "outcome": "pending"
-  },
-  {
-    "time": "02:20 AM IST",
-    "timestamp": 1774644618,
-    "decision": "NO_TRADE",
-    "confidence": 3,
-    "entry_price": 0.0,
-    "stop_loss": 0.0,
-    "take_profit": 0.0,
-    "reasoning": "STEP 1: 4h trend is bearish (RSI:26.6, MACD:-, ADX:27.91 strong bearish), 1h is strong_bearish (RSI:24.9, below Ichimoku cloud). 4h+1h both bearish \u2014 trend is clearly down. STEP 2: ADX 4h=27.91 confir",
-    "outcome": "pending"
-  },
-  {
-    "time": "02:24 AM IST",
-    "timestamp": 1774644853,
-    "decision": "NO_TRADE",
-    "confidence": 3,
-    "entry_price": 0.0,
-    "stop_loss": 0.0,
-    "take_profit": 0.0,
-    "reasoning": "Step 1: 4h trend is bearish (RSI 27, MACD negative, ADX 27.91 strong bearish) and 1h trend is strong_bearish (RSI 25.2, Ichimoku red below cloud). Higher timeframe bias is clearly bearish. Step 2: 4h ",
-    "outcome": "pending"
-  },
-  {
-    "time": "02:25 AM IST",
-    "timestamp": 1774644916,
-    "decision": "NO_TRADE",
-    "confidence": 3,
-    "entry_price": 0.0,
-    "stop_loss": 0.0,
-    "take_profit": 0.0,
-    "reasoning": "Step 1: 4H is bearish (RSI 27, MACD negative, ADX 27.91 strong bearish) \u2014 strong downtrend. 1H is strong_bearish (RSI 25.3, red Ichimoku below cloud). Higher timeframe bias is firmly bearish. Step 2: ",
-    "outcome": "pending"
-  },
-  {
     "time": "02:26 AM IST",
     "timestamp": 1774644973,
     "decision": "NO_TRADE",
@@ -217,6 +107,116 @@
     "stop_loss": 0.0,
     "take_profit": 0.0,
     "reasoning": "Step 1: 4h trend is bearish (ADX 27.91 strong, DI bearish, RSI 27.6) and 1h is strong_bearish (RSI 27.3, MACD negative, Ichimoku red below cloud). These are the dominant timeframes and both firmly bea",
+    "outcome": "pending"
+  },
+  {
+    "time": "02:42 AM IST",
+    "timestamp": 1774645974,
+    "decision": "NO_TRADE",
+    "confidence": 3,
+    "entry_price": 0.0,
+    "stop_loss": 0.0,
+    "take_profit": 0.0,
+    "reasoning": "Step 1: 4H trend is bearish (RSI 27.6, MACD negative, ADX 27.91 strong bearish) \u2014 this is the KING timeframe and it's decisively bearish. 1H is strong_bearish (RSI 27.2, below Ichimoku cloud). Counter",
+    "outcome": "pending"
+  },
+  {
+    "time": "02:45 AM IST",
+    "timestamp": 1774646150,
+    "decision": "NO_TRADE",
+    "confidence": 4,
+    "entry_price": 0.0,
+    "stop_loss": 0.0,
+    "take_profit": 0.0,
+    "reasoning": "Step 1: 4h trend is BEARISH with strong ADX 27.91 and bearish DI - this is the KING timeframe and cannot be counter-traded. 1h is strong_bearish with RSI 27.4 - deeply oversold but still bearish. 4h+1",
+    "outcome": "pending"
+  },
+  {
+    "time": "02:48 AM IST",
+    "timestamp": 1774646329,
+    "decision": "NO_TRADE",
+    "confidence": 4,
+    "entry_price": 0.0,
+    "stop_loss": 0.0,
+    "take_profit": 0.0,
+    "reasoning": "Step 1: Higher TF bias is strongly bearish. 4H trend is bearish with ADX 27.91 (strong trend) and bearish DI, RSI 28.2. 1H is strong_bearish with RSI 28.6, below Ichimoku cloud (red). This is a domina",
+    "outcome": "pending"
+  },
+  {
+    "time": "02:50 AM IST",
+    "timestamp": 1774646448,
+    "decision": "NO_TRADE",
+    "confidence": 4,
+    "entry_price": 0.0,
+    "stop_loss": 0.0,
+    "take_profit": 0.0,
+    "reasoning": "STEP 1: 4h trend is bearish (ADX 27.91 strong, DI bearish, RSI 28.2) \u2014 this is the KING timeframe and it's strongly bearish. 1h confirms bearish (RSI 28.5, Ichimoku red below cloud, MACD negative). Hi",
+    "outcome": "pending"
+  },
+  {
+    "time": "02:51 AM IST",
+    "timestamp": 1774646507,
+    "decision": "NO_TRADE",
+    "confidence": 4,
+    "entry_price": 0.0,
+    "stop_loss": 0.0,
+    "take_profit": 0.0,
+    "reasoning": "STEP 1: 4h trend is bearish (RSI 28.2, MACD-, ADX 27.91 strong bearish) \u2014 this is KING. 1h is also strong_bearish (RSI 28.5, red below Ichimoku cloud). Both TFs aligned bearish \u2014 would normally favor ",
+    "outcome": "pending"
+  },
+  {
+    "time": "02:54 AM IST",
+    "timestamp": 1774646686,
+    "decision": "NO_TRADE",
+    "confidence": 4,
+    "entry_price": 0.0,
+    "stop_loss": 0.0,
+    "take_profit": 0.0,
+    "reasoning": "Step 1: 4h trend is bearish (ADX 27.91 strong, DI bearish, RSI 28) and 1h is strong_bearish (RSI 28.5, below Ichimoku cloud). These higher timeframes are firmly bearish \u2014 KING rule says do not counter",
+    "outcome": "pending"
+  },
+  {
+    "time": "02:56 AM IST",
+    "timestamp": 1774646807,
+    "decision": "NO_TRADE",
+    "confidence": 4,
+    "entry_price": 0.0,
+    "stop_loss": 0.0,
+    "take_profit": 0.0,
+    "reasoning": "STEP 1: 4h trend is BEARISH with ADX 27.91 (strong) and bearish DI \u2014 this is the dominant signal. 1h is strong_bearish with RSI 28.5 \u2014 both higher TFs agree bearish, meaning no long against this trend",
+    "outcome": "pending"
+  },
+  {
+    "time": "02:59 AM IST",
+    "timestamp": 1774646984,
+    "decision": "NO_TRADE",
+    "confidence": 4,
+    "entry_price": 0.0,
+    "stop_loss": 0.0,
+    "take_profit": 0.0,
+    "reasoning": "Step 1: 4H is bearish (RSI 28.3, MACD-, ADX 27.91 strong bearish) and 1H is strong_bearish (RSI 28.8, below Ichimoku cloud). Higher timeframe bias is clearly bearish. Step 2: ADX 27.91 on 4H confirms ",
+    "outcome": "pending"
+  },
+  {
+    "time": "03:00 AM IST",
+    "timestamp": 1774647048,
+    "decision": "NO_TRADE",
+    "confidence": 4,
+    "entry_price": 0.0,
+    "stop_loss": 0.0,
+    "take_profit": 0.0,
+    "reasoning": "STEP 1: 4h trend is bearish with ADX 27.91 (strong) and bearish DI. 1h is strong_bearish with RSI 28.6 and price below Ichimoku cloud (red). These two timeframes agree on bearish bias, so counter-trad",
+    "outcome": "pending"
+  },
+  {
+    "time": "03:05 AM IST",
+    "timestamp": 1774647348,
+    "decision": "NO_TRADE",
+    "confidence": 4,
+    "entry_price": 0.0,
+    "stop_loss": 0.0,
+    "take_profit": 0.0,
+    "reasoning": "STEP 1: 4h is bearish (RSI 28.5, MACD-, ADX 27.91 strong bearish) and 1h is strong_bearish (RSI 29.2, MACD-, Ichimoku red below cloud). Both TFs agree bearish \u2014 would normally trade short, BUT 4h RSI ",
     "outcome": "pending"
   }
 ]

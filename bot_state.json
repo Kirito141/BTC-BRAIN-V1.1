@@ -1,5 +1,5 @@
 {
-  "last_claude_call": 1774645953.6608572,
+  "last_claude_call": 1774647326.125386,
   "consecutive_losses": 0,
   "loss_cooldown_until": 0,
   "daily_stats": {
@@ -13,7 +13,7 @@
   },
   "last_trade_direction": null,
   "last_trade_was_loss": false,
-  "total_claude_calls_today": 21,
+  "total_claude_calls_today": 30,
   "total_claude_calls_date": "2026-03-28",
-  "last_heartbeat": 1774644211.6807911
+  "last_heartbeat": 1774675647.124404
 }
