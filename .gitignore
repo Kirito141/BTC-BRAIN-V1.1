@@ -34,3 +34,12 @@ Thumbs.db
 active_position.json
 pnl_log.csv
 daily_pnl.json
+prompt_logs/
+*.csv
+bot_state.json
+daily_pnl.json
+signal_history.json
+active_position.json
+.env
+__pycache__/
+*.pyc
